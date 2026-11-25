@@ -1,0 +1,44 @@
+name: android
+
+# Cross-checks Rune for Android (arm64 and x86_64) with the features a real app turns on, on pushes
+# to the android/** branches and on request. The runner's preinstalled NDK supplies the C compiler
+# that blake3's build script needs; nasm is for rav1d's x86_64 assembly.
+on:
+  push:
+    branches: ["android/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUNE_FEATURES: embedded-fonts,accessibility,tooling,segmenter-dictionaries,svg,avif
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-linux-android, x86_64-linux-android]
+    steps:
+      - uses: actions/checkout@v5
+      # rust-toolchain.toml picks the toolchain; it lists only the wasm target.
+      - run: rustup target add ${{ matrix.target }}
+      - run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: NDK compilers
+        run: |
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          triple="${{ matrix.target }}"
+          var="${triple//-/_}"
+          echo "CC_${var}=$bin/${triple}24-clang" >> "$GITHUB_ENV"
+          echo "CXX_${var}=$bin/${triple}24-clang++" >> "$GITHUB_ENV"
+          echo "AR_${var}=$bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${var^^}_LINKER=$bin/${triple}24-clang" >> "$GITHUB_ENV"
+      - run: cargo check --locked --target ${{ matrix.target }} -p rune --features "$RUNE_FEATURES"
+      - run: cargo check --locked --target ${{ matrix.target }} -p rune-kit --features markdown,mermaid

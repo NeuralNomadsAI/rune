@@ -22,7 +22,8 @@ pub(super) fn take_probe_calls() -> usize {
 pub(crate) fn overloaded() -> bool {
     #[cfg(all(test, debug_assertions))]
     PROBE_CALLS.with(|c| c.set(c.get() + 1));
-    #[cfg(unix)]
+    // Android's libc has no `getloadavg`.
+    #[cfg(all(unix, not(target_os = "android")))]
     {
         use std::{sync::Mutex, time::{Duration, Instant}};
         static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
@@ -36,7 +37,7 @@ pub(crate) fn overloaded() -> bool {
         *cache = Some((crate::time::now(), busy));
         busy
     }
-    #[cfg(not(unix))]
+    #[cfg(any(not(unix), target_os = "android"))]
     { false }
 }
 
