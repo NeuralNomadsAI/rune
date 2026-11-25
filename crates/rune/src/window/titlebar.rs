@@ -27,16 +27,16 @@ pub(crate) use caption::{BUTTONS_KEY, EDGES_KEY, FRAME_KEY, frame};
 ///   layouts flyout over maximize (Windows 11), the window menu (Alt+Space, or a right-click on
 ///   a `.window_drag()` region) and its animations; Rune draws the three caption buttons over
 ///   the trailing edge at the band's height, as Electron's `titleBarOverlay` does.
-/// - **Linux on Wayland, where the compositor draws no window frame (GNOME):** no title bar
+/// - **Linux on Wayland, with `RUNE_LINUX_FRAME=1`** (off by default for now; it is meant for
+///   compositors that draw no window frame, GNOME's): no title bar
 ///   either, in place of the grey bar winit would draw above the app's. Rune draws the caption
 ///   buttons the desktop's button layout names (GNOME's default, `appmenu:close`, is close
 ///   alone; a layout on the left puts them there) as round buttons in the band, and the window
 ///   resizes from a band just inside its edges. `.window_drag()` regions move it, maximize it on
 ///   a double click and open the compositor's window menu on a right click. The window has no
-///   shadow and square corners. `RUNE_LINUX_FRAME=0` keeps winit's frame, and `=1` draws Rune's
-///   under any Wayland compositor.
-/// - **Elsewhere** (X11, and Wayland compositors that draw the frame themselves: KDE, Sway,
-///   Hyprland): the native frame stays and [`ChromeInsets`] is zero.
+///   shadow and square corners.
+/// - **Elsewhere** (X11, and Wayland without that variable): the native frame stays and
+///   [`ChromeInsets`] is zero.
 ///
 /// `Cx::titlebar_height` changes the height while the app runs, as a UI zoom does, and
 /// `Cx::set_titlebar` the whole titlebar, as a switch between layouts does. A borderless window

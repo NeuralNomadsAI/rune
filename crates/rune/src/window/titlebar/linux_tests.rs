@@ -36,6 +36,20 @@ fn the_frame_can_be_forced_either_way() {
 }
 
 #[test]
+fn the_frame_is_off_until_it_is_asked_for() {
+    let (frames, no_frames) = (|| true, || false);
+    // Off by default: winit's bar, as before, whatever the compositor.
+    assert!(!BY_DEFAULT);
+    assert!(!wanted(None, BY_DEFAULT, no_frames));
+    assert!(!wanted(None, BY_DEFAULT, frames));
+    // `RUNE_LINUX_FRAME=1` draws it under any Wayland compositor, `=0` never.
+    assert!(wanted(Some("1"), BY_DEFAULT, no_frames) && wanted(Some("1"), BY_DEFAULT, frames));
+    assert!(!wanted(Some("0"), true, no_frames));
+    // On by default, it is only where the compositor draws no frame of its own.
+    assert!(wanted(None, true, no_frames) && !wanted(None, true, frames));
+}
+
+#[test]
 fn the_desktops_layout_is_kept_and_a_new_one_is_reported() {
     assert_eq!(desktop_layout(), ButtonLayout::default(), "three at the right until the desktop says");
     assert!(set_desktop_layout("appmenu:close"));

@@ -1616,8 +1616,8 @@ rune::App::new(spec).fit_content_height().run();
   button the window can't act on isn't drawn (`Cx::window_actions`), and `.window_drag()` regions move it,
   maximize it on a double click and open the compositor's window menu on a right click. That window
   has no shadow and square corners. X11 and compositors that draw the frame themselves (KDE, Sway,
-  Hyprland) keep the native frame; `RUNE_LINUX_FRAME=0` keeps winit's everywhere and `=1` draws
-  Rune's under any Wayland compositor. `Cx::chrome_insets()` says what the controls take (`leading`,
+  Hyprland) keep the native frame. This frame is off by default for now: `RUNE_LINUX_FRAME=1` turns
+  it on, under any Wayland compositor. `Cx::chrome_insets()` says what the controls take (`leading`,
   `trailing`, `height`; zero where the native frame stays; memos rebuild when it changes), `Cx::caption_color(c)`
   colours the caption symbols for an app theme, `Cx::titlebar_height(h)` changes the band's height
   as the app runs (a UI zoom), `Cx::is_maximized()` reports confirmed OS maximized state and

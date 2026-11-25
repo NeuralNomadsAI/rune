@@ -120,13 +120,23 @@ pub(crate) fn desktop_layout() -> ButtonLayout {
 }
 
 /// What `RUNE_LINUX_FRAME` asks for: `0` keeps winit's frame, `1` draws Rune's under any
-/// Wayland compositor; anything else leaves it to what the compositor offers.
+/// Wayland compositor; anything else leaves it to the default (`wanted`).
 pub(crate) fn forced(value: Option<&str>) -> Option<bool> {
     match value {
         Some("0") => Some(false),
         Some("1") => Some(true),
         _ => None,
     }
+}
+
+/// Whether the frame is drawn without being asked for, where the compositor draws none. Off
+/// until the frame has been seen on a GNOME desktop: `RUNE_LINUX_FRAME=1` turns it on.
+pub(crate) const BY_DEFAULT: bool = false;
+
+/// Whether a Wayland window with `App::titlebar` gets the frame: what `RUNE_LINUX_FRAME` says
+/// (`env`), else, `by_default`, only where the compositor draws no frame of its own.
+pub(crate) fn wanted(env: Option<&str>, by_default: bool, compositor_frames: impl FnOnce() -> bool) -> bool {
+    forced(env).unwrap_or_else(|| by_default && !compositor_frames())
 }
 
 /// Whether this process's windows with `App::titlebar` get Rune's own frame (`choose`).
@@ -138,10 +148,10 @@ pub(crate) fn chosen() -> bool {
     CHOSEN.get().copied().unwrap_or(false)
 }
 
-/// Whether a window with `App::titlebar` on this display gets Rune's own frame: on Wayland,
-/// where the compositor has no `xdg-decoration` to draw one with. Asked once, on winit's own
-/// connection, before the first such window is made. X11 and a display that doesn't answer keep
-/// the native frame.
+/// Whether a window with `App::titlebar` on this display gets Rune's own frame (`wanted`): on
+/// Wayland only. Whether the compositor has `xdg-decoration` to draw a frame with is asked once,
+/// on winit's own connection, before the first such window is made, and only when the frame is
+/// on by default. X11 and a display that doesn't answer keep the native frame.
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
 #[allow(unsafe_code)]
 pub(crate) fn choose(event_loop: &winit::event_loop::ActiveEventLoop) -> bool {
@@ -158,12 +168,14 @@ pub(crate) fn choose(event_loop: &winit::event_loop::ActiveEventLoop) -> bool {
 
     *CHOSEN.get_or_init(|| {
         let Ok(RawDisplayHandle::Wayland(display)) = event_loop.display_handle().map(|d| d.as_raw()) else { return false };
-        if let Some(forced) = forced(crate::env::var("RUNE_LINUX_FRAME").as_deref()) { return forced; }
-        // SAFETY: winit owns this `wl_display` and keeps it alive for the event loop, which
-        // outlives every window; a foreign backend never closes it.
-        let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
-        let Ok((globals, _queue)) = registry_queue_init::<Probe>(&Connection::from_backend(backend)) else { return false };
-        !globals.contents().with_list(|list| list.iter().any(|global| global.interface == "zxdg_decoration_manager_v1"))
+        wanted(crate::env::var("RUNE_LINUX_FRAME").as_deref(), BY_DEFAULT, || {
+            // SAFETY: winit owns this `wl_display` and keeps it alive for the event loop, which
+            // outlives every window; a foreign backend never closes it.
+            let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
+            // No answer counts as a compositor that draws the frame: the native one stays.
+            let Ok((globals, _queue)) = registry_queue_init::<Probe>(&Connection::from_backend(backend)) else { return true };
+            globals.contents().with_list(|list| list.iter().any(|global| global.interface == "zxdg_decoration_manager_v1"))
+        })
     })
 }
 
