@@ -16,6 +16,8 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewConfiguration
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedText
@@ -86,6 +88,36 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         schedule(nativeTouch(handle, event.actionMasked, event.actionIndex, ids, xs, ys, event.eventTime))
         return true
     }
+
+    /** TalkBack's view of the app: Rune's accessibility tree, one virtual node per element. */
+    private val nodes = object : AccessibilityNodeProvider() {
+        override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? =
+            if (handle == 0L) null else nativeA11yNodeInfo(handle, virtualViewId)?.also {
+                // The root is this view, focusable for keys: TalkBack would take it for one
+                // control and read its name in place of every text inside.
+                if (virtualViewId == AccessibilityNodeProvider.HOST_VIEW_ID) {
+                    it.isFocusable = false
+                    it.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_FOCUS)
+                    it.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && it.childCount == 0 && !it.contentDescription.isNullOrEmpty()) {
+                    // A text of its own, where TalkBack would read a scrolled page's as one.
+                    it.isScreenReaderFocusable = true
+                }
+            }
+
+        override fun findFocus(focus: Int): AccessibilityNodeInfo? =
+            if (handle == 0L) null else nativeA11yFindFocus(handle, focus)
+
+        override fun performAction(virtualViewId: Int, action: Int, arguments: Bundle?): Boolean =
+            handle != 0L && nativeA11yPerformAction(handle, virtualViewId, action, arguments)
+    }
+
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider? =
+        if (handle != 0L && nativeA11yAvailable(handle)) nodes else super.getAccessibilityNodeProvider()
+
+    /** Explore by touch: the node under the finger takes accessibility focus. */
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean =
+        (handle != 0L && nativeA11yHover(handle, event.action, event.x, event.y)) || super.dispatchHoverEvent(event)
 
     override fun onCheckIsTextEditor() = handle != 0L && nativeWantsText(handle)
 
@@ -321,6 +353,11 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativePastePng(handle: Long, png: ByteArray): Long
     private external fun nativeTakeKeyboard(handle: Long): Int
     private external fun nativeWantsText(handle: Long): Boolean
+    private external fun nativeA11yAvailable(handle: Long): Boolean
+    private external fun nativeA11yNodeInfo(handle: Long, id: Int): AccessibilityNodeInfo?
+    private external fun nativeA11yFindFocus(handle: Long, focus: Int): AccessibilityNodeInfo?
+    private external fun nativeA11yPerformAction(handle: Long, id: Int, action: Int, arguments: Bundle?): Boolean
+    private external fun nativeA11yHover(handle: Long, action: Int, x: Float, y: Float): Boolean
     private external fun nativeDark(handle: Long, dark: Boolean): Long
     private external fun nativeBack(handle: Long): Boolean
     private external fun nativeDrop(handle: Long)

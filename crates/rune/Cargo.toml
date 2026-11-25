@@ -96,7 +96,7 @@ metal-backend = ["rune-gpu/metal-backend", "rune-media/metal-backend"]
 # UI Automation on Windows, NSAccessibility on macOS, AT-SPI on Linux (README, "Accessibility").
 # Nothing is built until an assistive client asks. Off, the platform adapters aren't compiled;
 # `Runtime::accessibility_tree` and `--tree` still report the tree.
-accessibility = ["dep:accesskit_windows", "dep:accesskit_macos", "dep:accesskit_unix"]
+accessibility = ["dep:accesskit_windows", "dep:accesskit_macos", "dep:accesskit_unix", "dep:accesskit_android"]
 # Use upstream `taffy::TaffyTree` instead of `rune_taffy::LayoutStore` for A/B benchmarks and parity checks.
 baseline-taffy = ["rune-taffy/baseline-taffy"]
 # Live GPU resource counters (`Device::get_internal_counters`) for upload tests and `upload_bench`.
@@ -149,6 +149,8 @@ pollster = { workspace = true }
 winit = { workspace = true, features = ["android-native-activity"] }
 jni-sys = "0.3"
 ndk-sys = "0.6"
+# TalkBack: the low-level adapter, driven by `RuneView`'s own `AccessibilityNodeProvider`.
+accesskit_android = { version = "0.9.1", optional = true }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), not(target_os = "android")))'.dependencies]
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }

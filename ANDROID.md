@@ -80,7 +80,12 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   the system's clipboard changes.
 - **Links**: `Tx::open_url` starts `Intent.ACTION_VIEW`; `Tx::open_url_then` reports a failure when no
   app takes the link.
+- **Accessibility**: TalkBack reads Rune's AccessKit tree through an `AccessibilityNodeProvider` on
+  `RuneView` (`accesskit_android`, with the `accessibility` feature): roles, names, states, focus,
+  explore by touch and actions. The view is a passive root and each text a stop of its own
+  (Android 9+). Nothing is built until a service asks, and while a viewport scrolls the tree's
+  changes go at most every 100 ms.
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
-Not yet: accessibility (TalkBack) and file pickers.
+Not yet: file pickers.

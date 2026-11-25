@@ -84,6 +84,20 @@ pub(super) enum Next {
     Idle,
 }
 
+impl Next {
+    /// This, or sooner: the next frame when `now`, else within `secs` when given.
+    #[cfg_attr(not(feature = "accessibility"), allow(dead_code))]
+    fn sooner(self, now: bool, secs: Option<f64>) -> Self {
+        let ms = |secs: f64| (secs * 1000.0).ceil().clamp(1.0, u32::MAX as f64) as u32;
+        match (self, now, secs) {
+            (Self::VSync, ..) | (_, true, _) => Self::VSync,
+            (Self::AfterMs(a), false, Some(s)) => Self::AfterMs(a.min(ms(s))),
+            (Self::Idle, false, Some(s)) => Self::AfterMs(ms(s)),
+            (other, false, None) => other,
+        }
+    }
+}
+
 impl From<EmbedFrame> for Next {
     fn from(f: EmbedFrame) -> Self {
         match (f.animating, f.wake_after_secs) {
@@ -106,6 +120,8 @@ pub(super) struct View {
     wake: Waker,
     ime: ImeBridge,
     clipboard: crate::clipboard::Client,
+    #[cfg(feature = "accessibility")]
+    a11y: Option<crate::a11y::android::Adapter>,
 }
 
 impl View {
@@ -114,7 +130,7 @@ impl View {
         let start = take_registered()?;
         let mut clipboard = crate::clipboard::Client::default();
         clipboard.connect(wake.clone());
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), clipboard })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), clipboard, #[cfg(feature = "accessibility")] a11y: None })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -143,6 +159,11 @@ impl View {
                         self.clipboard.receive_core(host.core());
                         next = host.frame().into();
                         self.clipboard.flush_core(host.core());
+                        #[cfg(feature = "accessibility")]
+                        if let Some(a11y) = &mut self.a11y {
+                            let (queued, wake) = a11y.service(host.core(), "");
+                            next = next.sooner(queued, wake);
+                        }
                     }
                     self.sync_ime();
                 }
@@ -224,6 +245,16 @@ impl View {
         let Some(host) = &mut self.host else { return Next::Idle };
         host.core().ime(ev);
         self.step(Event::Frame, None)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(super) fn set_a11y(&mut self, adapter: Option<crate::a11y::android::Adapter>) {
+        self.a11y = adapter;
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(super) fn a11y(&mut self) -> Option<&mut crate::a11y::android::Adapter> {
+        self.a11y.as_mut()
     }
 
     pub(super) fn back(&mut self) -> bool {

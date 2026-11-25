@@ -3,7 +3,7 @@
 //! handlers run wherever the OS calls them; they only queue what they heard and wake the host,
 //! whose thread then activates the runtime's tree (`a11y/tree.rs`), runs the actions
 //! and sends tree updates. Until a client asks, the runtime builds nothing.
-#![cfg_attr(not(all(feature = "accessibility", any(target_os = "windows", target_os = "macos", target_os = "linux"))), allow(dead_code))]
+#![cfg_attr(not(all(feature = "accessibility", any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "android"))), allow(dead_code))]
 
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +14,8 @@ use crate::runtime::Runtime;
 pub(crate) mod actions;
 #[cfg(test)]
 mod actions_tests;
+#[cfg(any(test, target_os = "android"))]
+pub(crate) mod android;
 #[cfg(test)]
 mod aria_tests;
 #[cfg(test)]

@@ -43,6 +43,7 @@ impl ImeWindow {
         self.start == other.start
     }
 
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub(crate) fn text(&self) -> &str {
         &self.text
     }

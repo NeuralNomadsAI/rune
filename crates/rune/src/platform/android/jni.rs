@@ -90,7 +90,10 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeNew(env: *mut JNIEnv, this:
         let global = call!(env, NewGlobalRef(this));
         let wake = Arc::new(WakeTarget { vm, view: Mutex::new(global), method });
         let waker: crate::runtime::Waker = { let w = wake.clone(); Arc::new(move || w.wake()) };
-        let view = match View::new(density, f64::from(long_press_ms) / 1000.0, dark != 0, waker.clone()) {
+        #[cfg(feature = "accessibility")]
+        let a11y_wake = waker.clone();
+        #[cfg_attr(not(feature = "accessibility"), allow(unused_mut))]
+        let mut view = match View::new(density, f64::from(long_press_ms) / 1000.0, dark != 0, waker.clone()) {
             Some(view) => view,
             None => {
                 rune_android_main();
@@ -104,6 +107,8 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeNew(env: *mut JNIEnv, this:
                 }
             }
         };
+        #[cfg(feature = "accessibility")]
+        view.set_a11y(crate::a11y::android::Adapter::new(env, this, a11y_wake));
         Box::into_raw(Box::new(Handle { view, window: None, wake })) as jlong
     }
 }
@@ -294,6 +299,52 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeKeyboard(_: *mut JNIEnv
 extern "system" fn Java_ly_anoma_rune_RuneView_nativeWantsText(_: *mut JNIEnv, _: jobject, h: jlong) -> jboolean {
     // SAFETY: `h` comes from `nativeNew`.
     unsafe { handle(h) }.map_or(0, |h| jboolean::from(h.view.wants_text()))
+}
+
+/// Whether this build has an accessibility adapter, for `RuneView` to offer a node provider.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeA11yAvailable(_: *mut JNIEnv, _: jobject, _h: jlong) -> jboolean {
+    #[cfg(feature = "accessibility")]
+    // SAFETY: `_h` comes from `nativeNew`.
+    { jboolean::from(unsafe { handle(_h) }.is_some_and(|h| h.view.a11y().is_some())) }
+    #[cfg(not(feature = "accessibility"))]
+    { 0 }
+}
+
+/// `AccessibilityNodeProvider.createAccessibilityNodeInfo`: an `AccessibilityNodeInfo` or null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeA11yNodeInfo(_env: *mut JNIEnv, _: jobject, _h: jlong, _id: jint) -> jobject {
+    #[cfg(feature = "accessibility")]
+    // SAFETY: `_h` comes from `nativeNew`; `_env` is this call's environment.
+    if let Some(a11y) = unsafe { handle(_h) }.and_then(|h| h.view.a11y()) { return unsafe { a11y.node_info(_env, _id) } }
+    null_mut()
+}
+
+/// `AccessibilityNodeProvider.findFocus`: an `AccessibilityNodeInfo` or null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeA11yFindFocus(_env: *mut JNIEnv, _: jobject, _h: jlong, _focus: jint) -> jobject {
+    #[cfg(feature = "accessibility")]
+    // SAFETY: `_h` comes from `nativeNew`; `_env` is this call's environment.
+    if let Some(a11y) = unsafe { handle(_h) }.and_then(|h| h.view.a11y()) { return unsafe { a11y.find_focus(_env, _focus) } }
+    null_mut()
+}
+
+/// `AccessibilityNodeProvider.performAction`; `arguments` is a `Bundle` or null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeA11yPerformAction(_env: *mut JNIEnv, _: jobject, _h: jlong, _id: jint, _action: jint, _arguments: jobject) -> jboolean {
+    #[cfg(feature = "accessibility")]
+    // SAFETY: `_h` comes from `nativeNew`; `_env` and `_arguments` are this call's.
+    if let Some(a11y) = unsafe { handle(_h) }.and_then(|h| h.view.a11y()) { return jboolean::from(unsafe { a11y.perform_action(_env, _id, _action, _arguments) }) }
+    0
+}
+
+/// A hover `MotionEvent` (TalkBack's explore by touch); true when the tree took it.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeA11yHover(_: *mut JNIEnv, _: jobject, _h: jlong, _action: jint, _x: jfloat, _y: jfloat) -> jboolean {
+    #[cfg(feature = "accessibility")]
+    // SAFETY: `_h` comes from `nativeNew`.
+    if let Some(a11y) = unsafe { handle(_h) }.and_then(|h| h.view.a11y()) { return jboolean::from(a11y.hover(_action, _x, _y)) }
+    0
 }
 
 /// Pointers past this many in one event are dropped (Android reports at most ten).
