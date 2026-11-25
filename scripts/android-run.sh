@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Builds examples/android-hello, installs it on the device or emulator adb sees, and starts it.
+# Builds an Android example (examples/android-hello, or android-gallery with --app gallery) into the
+# APK of examples/android-host, installs it on the device or emulator adb sees, and starts it.
 #
-#   scripts/android-run.sh [--release] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
+#   scripts/android-run.sh [--app hello|gallery] [--release] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
 #
 # Needs ANDROID_NDK_HOME (or ANDROID_NDK_ROOT), ANDROID_HOME with platform 36, JAVA_HOME (17+)
 # and Gradle 9 on PATH. The target defaults to the connected device's ABI, else arm64.
@@ -9,14 +10,16 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 profile=debug
+example=hello
 target=
 build_only=
 while [ $# -gt 0 ]; do
   case "$1" in
+    --app) example="$2"; shift ;;
     --release) profile=release ;;
     --target) target="$2"; shift ;;
     --build-only) build_only=1 ;;
-    *) echo "usage: $0 [--release] [--target TRIPLE] [--build-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--app hello|gallery] [--release] [--target TRIPLE] [--build-only]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -51,9 +54,9 @@ export "CARGO_TARGET_${var^^}_LINKER=$bin/${target}24-clang$ext"
 
 flag=
 [ "$profile" = release ] && flag=--release
-cargo build -p android-hello --target "$target" $flag
+cargo build -p "android-$example" --target "$target" $flag
 out="${CARGO_TARGET_DIR:-$root/target}/$target/$profile/libmain.so"
-app="$root/examples/android-hello/android"
+app="$root/examples/android-host"
 mkdir -p "$app/build/jniLibs/$abi"
 cp "$out" "$app/build/jniLibs/$abi/libmain.so"
 (cd "$app" && gradle --quiet assembleDebug)
@@ -62,4 +65,4 @@ echo "$apk"
 [ -n "$build_only" ] && exit 0
 
 "$adb" install -r "$apk"
-"$adb" shell am start -n ly.anoma.rune.hello/ly.anoma.rune.RuneActivity
+"$adb" shell am start -n ly.anoma.rune.example/ly.anoma.rune.RuneActivity

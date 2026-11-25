@@ -452,14 +452,14 @@ fn confirming_timer_fires_on_matching_attempt_and_ignores_stale_attempt() {
 #[test]
 fn confirming_timer_compensates_positive_delay_below_long_press_only() {
     // 200 ms delayed press: compensates to 0.20 + (0.50 - 0.20) = 0.50.
-    assert!((compensated_hold_due(0.20, 0.0, TouchHoldPolicy::ConfirmingTimer) - 0.50).abs() < 1e-9);
+    assert!((compensated_hold_due(0.20, 0.0, TouchHoldPolicy::ConfirmingTimer, hold_duration(TouchHoldPolicy::ConfirmingTimer, None)) - 0.50).abs() < 1e-9);
     // 700 ms delayed press (>= LONG_PRESS): arms full 0.50 from arrival (1.20).
-    assert!((compensated_hold_due(0.70, 0.0, TouchHoldPolicy::ConfirmingTimer) - 1.20).abs() < 1e-9);
+    assert!((compensated_hold_due(0.70, 0.0, TouchHoldPolicy::ConfirmingTimer, hold_duration(TouchHoldPolicy::ConfirmingTimer, None)) - 1.20).abs() < 1e-9);
     // Malformed future timestamp (negative delay) or NaN: arms full 0.50 from arrival.
-    assert!((compensated_hold_due(0.20, 0.80, TouchHoldPolicy::ConfirmingTimer) - 0.70).abs() < 1e-9);
-    assert!((compensated_hold_due(0.20, f64::NAN, TouchHoldPolicy::ConfirmingTimer) - 0.70).abs() < 1e-9);
+    assert!((compensated_hold_due(0.20, 0.80, TouchHoldPolicy::ConfirmingTimer, hold_duration(TouchHoldPolicy::ConfirmingTimer, None)) - 0.70).abs() < 1e-9);
+    assert!((compensated_hold_due(0.20, f64::NAN, TouchHoldPolicy::ConfirmingTimer, hold_duration(TouchHoldPolicy::ConfirmingTimer, None)) - 0.70).abs() < 1e-9);
     // DirectTimer (native & headless default) always arms now + LONG_PRESS.
-    assert!((compensated_hold_due(0.20, 0.0, TouchHoldPolicy::DirectTimer) - 0.70).abs() < 1e-9);
+    assert!((compensated_hold_due(0.20, 0.0, TouchHoldPolicy::DirectTimer, hold_duration(TouchHoldPolicy::DirectTimer, None)) - 0.70).abs() < 1e-9);
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn simulate_hold(
     let mut fire_time = None;
     let mut pending_confirm: Option<(Attempt, f64)> = None;
 
-    let _ = step_hold(&mut seq, &mut state, HoldEvent::Start { now: 0.0, event_time: 0.0, policy });
+    let _ = step_hold(&mut seq, &mut state, HoldEvent::Start { now: 0.0, event_time: 0.0, policy, timeout: hold_duration(policy, None) });
 
     // Collect ordered timestamps to visit up to `lift_at`.
     let mut t = 0.0;
@@ -671,4 +671,29 @@ fn host_touch_hold_fires_once_cancels_confirm_and_ignores_stale_or_duplicate_eve
     rt.touch(2, TouchPhase::Ended, 100.0, 30.0, 5.0);
     rt.frame(0.0);
     assert_eq!(rt.wake_deadline(), None);
+}
+
+#[test]
+fn a_host_long_press_delay_arms_the_hold_at_the_systems_timeout() {
+    // Android's `ViewConfiguration.getLongPressTimeout()`: 400 ms by default, up to 1.5 s with the
+    // accessibility Touch & hold delay.
+    let mut rt = rig();
+    rt.set_touch_long_press(0.4);
+    rt.touch(1, TouchPhase::Started, 100.0, 100.0, 0.0);
+    assert_eq!(rt.pointer.touch.hold_deadline(), Some(0.4));
+    rt.touch(1, TouchPhase::Ended, 100.0, 100.0, 0.05);
+    rt.set_touch_long_press(1.5);
+    rt.touch(1, TouchPhase::Started, 100.0, 100.0, 0.1);
+    assert_eq!(rt.pointer.touch.hold_deadline(), Some(1.5));
+}
+
+#[test]
+fn a_nonsense_long_press_delay_keeps_the_default() {
+    let mut rt = rig();
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        rt.set_touch_long_press(bad);
+        rt.touch(1, TouchPhase::Started, 100.0, 100.0, 0.0);
+        assert_eq!(rt.pointer.touch.hold_deadline(), Some(LONG_PRESS), "{bad}");
+        rt.touch(1, TouchPhase::Cancelled, 100.0, 100.0, 0.0);
+    }
 }

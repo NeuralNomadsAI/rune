@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::ptr::{NonNull, null_mut};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use jni_sys::{JNIEnv, JavaVM, jboolean, jfloat, jint, jlong, jmethodID, jobject};
+use jni_sys::{JNIEnv, JavaVM, jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject};
 
 use super::host::{Next, View};
 use super::lifecycle::{Event, Insets};
@@ -86,7 +86,7 @@ unsafe fn handle<'a>(h: jlong) -> Option<&'a mut Handle> {
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_ly_anoma_rune_RuneView_nativeNew(env: *mut JNIEnv, this: jobject, density: jfloat, dark: jboolean) -> jlong {
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeNew(env: *mut JNIEnv, this: jobject, density: jfloat, long_press_ms: jint, dark: jboolean) -> jlong {
     super::logcat::redirect_stdio();
     // SAFETY: JNI calls on the UI thread with a live `env` and `this`.
     unsafe {
@@ -99,11 +99,11 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeNew(env: *mut JNIEnv, this:
         let global = call!(env, NewGlobalRef(this));
         let wake = Arc::new(WakeTarget { vm, view: Mutex::new(global), method });
         let waker: crate::runtime::Waker = { let w = wake.clone(); Arc::new(move || w.wake()) };
-        let view = match View::new(density, dark != 0, waker.clone()) {
+        let view = match View::new(density, f64::from(long_press_ms) / 1000.0, dark != 0, waker.clone()) {
             Some(view) => view,
             None => {
                 rune_android_main();
-                match View::new(density, dark != 0, waker) {
+                match View::new(density, f64::from(long_press_ms) / 1000.0, dark != 0, waker) {
                     Some(view) => view,
                     None => {
                         eprintln!("rune: android_main! didn't call rune::run");
@@ -179,6 +179,31 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeInsets(
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
     let insets = Insets { bars: [bar_top, bar_right, bar_bottom, bar_left], ime: [ime_top, ime_right, ime_bottom, ime_left] };
     next(h.view.set_insets(insets))
+}
+
+/// Pointers past this many in one event are dropped (Android reports at most ten).
+const MAX_POINTERS: usize = 16;
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeTouch(
+    env: *mut JNIEnv, _: jobject, h: jlong, action: jint, index: jint,
+    ids: jintArray, xs: jfloatArray, ys: jfloatArray, time_ms: jlong,
+) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    let (mut id, mut x, mut y) = ([0; MAX_POINTERS], [0.0; MAX_POINTERS], [0.0; MAX_POINTERS]);
+    // SAFETY: the three arrays are live and as long as `RuneView` made them; each copy writes
+    // at most `n` elements into a buffer of `MAX_POINTERS`.
+    let n = unsafe {
+        let n = (call!(env, GetArrayLength(ids)).max(0) as usize).min(MAX_POINTERS);
+        call!(env, GetIntArrayRegion(ids, 0, n as i32, id.as_mut_ptr()));
+        call!(env, GetFloatArrayRegion(xs, 0, n as i32, x.as_mut_ptr()));
+        call!(env, GetFloatArrayRegion(ys, 0, n as i32, y.as_mut_ptr()));
+        n
+    };
+    let pointers: Vec<(i32, f32, f32)> = (0..n).map(|i| (id[i], x[i], y[i])).collect();
+    next(h.view.touch(action, index.max(0) as usize, &pointers, time_ms as f64 / 1000.0))
 }
 
 #[unsafe(no_mangle)]

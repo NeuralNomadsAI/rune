@@ -87,7 +87,7 @@ impl HoldState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::runtime) enum HoldEvent {
     /// A hold-eligible touch began at runtime clock `now` with event timestamp `event_time`.
-    Start { now: f64, event_time: f64, policy: TouchHoldPolicy },
+    Start { now: f64, event_time: f64, policy: TouchHoldPolicy, timeout: f64 },
     /// A frame ticked at runtime clock `now`.
     Tick { now: f64, policy: TouchHoldPolicy },
     /// The host's low-priority confirmation turn ran for `attempt`.
@@ -110,12 +110,13 @@ pub(in crate::runtime) enum HoldEffect {
     Fire,
 }
 
-/// Hold timeout duration for `policy` (`LONG_PRESS` for direct/confirming timers,
-/// `HOST_HOLD_FALLBACK` behind the browser's live `contextmenu` under `HostContextMenu`).
+/// Hold timeout duration for `policy`: the host's system delay (`Runtime::set_touch_long_press`),
+/// else `LONG_PRESS`, for direct/confirming timers; `HOST_HOLD_FALLBACK` behind the browser's
+/// live `contextmenu` under `HostContextMenu`.
 #[inline]
-pub(in crate::runtime) fn hold_duration(policy: TouchHoldPolicy) -> f64 {
+pub(in crate::runtime) fn hold_duration(policy: TouchHoldPolicy, system: Option<f64>) -> f64 {
     match policy {
-        TouchHoldPolicy::DirectTimer | TouchHoldPolicy::ConfirmingTimer => LONG_PRESS,
+        TouchHoldPolicy::DirectTimer | TouchHoldPolicy::ConfirmingTimer => system.unwrap_or(LONG_PRESS),
         TouchHoldPolicy::HostContextMenu => HOST_HOLD_FALLBACK,
     }
 }
@@ -126,8 +127,7 @@ pub(in crate::runtime) fn hold_duration(policy: TouchHoldPolicy) -> f64 {
 /// (`kCompensateGestureDetectorTimeouts` with `kCompensateGestureTimeoutsForLongDelayedSequences = false`):
 /// a malformed/future timestamp or a press delayed by `>= timeout` arms a full `timeout` instead
 /// of firing immediately.
-pub(in crate::runtime) fn compensated_hold_due(now: f64, event_time: f64, policy: TouchHoldPolicy) -> f64 {
-    let timeout = hold_duration(policy);
+pub(in crate::runtime) fn compensated_hold_due(now: f64, event_time: f64, policy: TouchHoldPolicy, timeout: f64) -> f64 {
     if policy == TouchHoldPolicy::DirectTimer || !event_time.is_finite() {
         return now + timeout;
     }
@@ -142,10 +142,10 @@ pub(in crate::runtime) fn compensated_hold_due(now: f64, event_time: f64, policy
 /// Pure transition function for touch long-press recognition.
 pub(in crate::runtime) fn step_hold(seq: &mut Seq, state: &mut HoldState, event: HoldEvent) -> Effects<HoldEffect> {
     match event {
-        HoldEvent::Start { now, event_time, policy } => {
+        HoldEvent::Start { now, event_time, policy, timeout } => {
             let cancel = matches!(*state, HoldState::Confirming { .. });
             let attempt = seq.next();
-            let due = compensated_hold_due(now, event_time, policy);
+            let due = compensated_hold_due(now, event_time, policy, timeout);
             *state = HoldState::Armed { attempt, due };
             if cancel {
                 Effects::two(HoldEffect::CancelConfirm, HoldEffect::WakeAt(due))
@@ -208,6 +208,8 @@ pub(in crate::runtime) struct Touch {
     hold_seq: Seq,
     hold: HoldState,
     policy: TouchHoldPolicy,
+    /// The system's long-press delay a host reported (`Runtime::set_touch_long_press`).
+    long_press: Option<f64>,
     hold_command: Option<TouchHoldCommand>,
     /// [`Drag::data`] kept across an `El::on_edge_drag` gesture's phases.
     pub(in crate::runtime) edge_data: f32,
@@ -284,6 +286,11 @@ impl RuntimeCore {
     #[inline]
     pub(crate) fn set_touch_hold_policy(&mut self, policy: TouchHoldPolicy) {
         self.pointer.touch.policy = policy;
+    }
+
+    /// The system's long-press delay in seconds; a non-positive or non-finite one keeps the default.
+    pub(crate) fn set_touch_long_press(&mut self, secs: f64) {
+        self.pointer.touch.long_press = (secs.is_finite() && secs > 0.0).then_some(secs);
     }
 
     /// Takes the latest host-side confirmation command produced by the touch hold state machine.
@@ -471,7 +478,7 @@ impl RuntimeCore {
             }
         };
         let hold_event = if start_hold {
-            HoldEvent::Start { now, event_time: time, policy }
+            HoldEvent::Start { now, event_time: time, policy, timeout: hold_duration(policy, self.pointer.touch.long_press) }
         } else {
             HoldEvent::Cancel
         };

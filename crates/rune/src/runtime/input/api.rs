@@ -200,6 +200,11 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn touching(&self) -> bool { self.core().touching() }
 
+    /// The system's long-press delay in seconds (Android's `ViewConfiguration.getLongPressTimeout()`,
+    /// which the accessibility Touch & hold delay raises), in place of Rune's 0.5 s. A
+    /// non-positive or non-finite value keeps the default.
+    pub fn set_touch_long_press(&mut self, secs: f64) { self.core_mut().set_touch_long_press(secs); }
+
     #[inline(always)]
     pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) { self.core_mut().wheel_xy(x, y, dx, dy); }
     #[inline(always)]

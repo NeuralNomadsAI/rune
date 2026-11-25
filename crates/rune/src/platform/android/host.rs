@@ -11,7 +11,7 @@ use super::lifecycle::{self, Effect, Event, Insets};
 use crate::app::App;
 use crate::embed::{EmbedFrame, LayerHost};
 use crate::runtime::Waker;
-use crate::{Key, KeyEvent};
+use crate::{Key, KeyEvent, TouchPhase};
 
 /// What `RuneView` needs from a running app, with its state type erased.
 pub(super) trait Host {
@@ -23,6 +23,9 @@ pub(super) trait Host {
     fn frame(&mut self) -> EmbedFrame;
     fn set_safe_area(&mut self, insets: [f32; 4]);
     fn set_dark(&mut self, dark: bool);
+    fn set_long_press(&mut self, secs: f64);
+    /// One finger at (x, y) in points, `time` in seconds.
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64);
     /// The system back gesture: Escape when something has focus (closing what's open, or
     /// leaving a field), false to let the activity go back.
     fn back(&mut self) -> bool;
@@ -38,6 +41,8 @@ impl<S: 'static> Host for LayerHost<S> {
     fn frame(&mut self) -> EmbedFrame { LayerHost::frame(self) }
     fn set_safe_area(&mut self, insets: [f32; 4]) { self.runtime_mut().set_safe_area(insets); }
     fn set_dark(&mut self, dark: bool) { self.runtime_mut().set_system_dark(dark); }
+    fn set_long_press(&mut self, secs: f64) { self.runtime_mut().set_touch_long_press(secs); }
+    fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) { self.runtime_mut().touch(id, phase, x, y, time); }
     fn back(&mut self) -> bool {
         let rt = self.runtime_mut();
         if !rt.has_focus() { return false }
@@ -91,6 +96,8 @@ pub(super) struct View {
     start: Option<Start>,
     host: Option<Box<dyn Host>>,
     density: f32,
+    /// ViewConfiguration.getLongPressTimeout(), in seconds.
+    long_press: f64,
     dark: bool,
     insets: Insets,
     wake: Waker,
@@ -98,9 +105,9 @@ pub(super) struct View {
 
 impl View {
     /// `None` when no app called `run` from its `android_main!` function.
-    pub(super) fn new(density: f32, dark: bool, wake: Waker) -> Option<Self> {
+    pub(super) fn new(density: f32, long_press: f64, dark: bool, wake: Waker) -> Option<Self> {
         let start = take_registered()?;
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, dark, insets: Insets::default(), wake })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -138,6 +145,7 @@ impl View {
         let start = self.start.take().ok_or("rune: the Android app already failed to start")?;
         let mut host = start(window, viewport, self.density, self.dark, self.wake.clone())?;
         host.set_safe_area(lifecycle::safe_area(self.insets, self.density));
+        host.set_long_press(self.long_press);
         self.host = Some(host);
         Ok(())
     }
@@ -152,6 +160,17 @@ impl View {
     pub(super) fn set_dark(&mut self, dark: bool) -> Next {
         self.dark = dark;
         if let Some(host) = &mut self.host { host.set_dark(dark) }
+        self.step(Event::Frame, None)
+    }
+
+    /// One `MotionEvent`: `pointers` holds each finger's id and position in device pixels, and
+    /// `time` its `getEventTime()` in seconds.
+    pub(super) fn touch(&mut self, action: i32, index: usize, pointers: &[(i32, f32, f32)], time: f64) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        for (i, phase) in super::touch::phases(action, index, pointers.len()) {
+            let (id, x, y) = pointers[i];
+            host.touch(id as u64, phase, x / self.density, y / self.density, time);
+        }
         self.step(Event::Frame, None)
     }
 

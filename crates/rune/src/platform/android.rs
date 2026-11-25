@@ -11,6 +11,9 @@ mod jni;
 pub(crate) mod lifecycle;
 #[cfg(target_os = "android")]
 mod logcat;
+pub(crate) mod touch;
+#[cfg(test)]
+mod touch_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 

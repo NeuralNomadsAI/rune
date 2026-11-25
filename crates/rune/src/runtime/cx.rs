@@ -151,13 +151,18 @@ impl CxCore {
     pub(crate) fn hover_none(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::hover_none() }
-        #[cfg(not(target_arch = "wasm32"))]
+        // A phone or tablet's touch screen.
+        #[cfg(target_os = "android")]
+        { true }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         { false }
     }
     pub(crate) fn touch_controls(&self) -> bool {
         #[cfg(target_arch = "wasm32")]
         { crate::platform::web::touch_controls() }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        { true }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         { false }
     }
     pub(crate) fn system_contrast(&self) -> Option<crate::SystemContrast> { self.system_contrast }

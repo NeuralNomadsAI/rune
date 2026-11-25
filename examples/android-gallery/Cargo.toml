@@ -1,0 +1,20 @@
+[package]
+name = "android-gallery"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `examples/kit-gallery` as the Android library `RuneActivity` loads (`libmain.so`); built by
+# `scripts/android-run.sh --app gallery`.
+[lib]
+name = "main"
+crate-type = ["cdylib"]
+
+[dependencies]
+kit-gallery = { path = "../kit-gallery" }
+rune = { workspace = true, default-features = true }
+
+[lints]
+workspace = true
+

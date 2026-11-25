@@ -17,11 +17,13 @@ export ANDROID_NDK_HOME=/path/to/ndk ANDROID_HOME=/path/to/sdk
 scripts/android-run.sh
 ```
 
-The script builds `examples/android-hello` (`examples/hello` as `libmain.so`) for the ABI of
-the device or emulator `adb` sees, packs it with Gradle, installs it and starts it.
+The script builds `examples/android-hello` (`examples/hello` as `libmain.so`), or with
+`--app gallery` `examples/android-gallery` (the rune-kit gallery), for the ABI of the device or
+emulator `adb` sees, packs it into the APK of `examples/android-host` with Gradle, installs it and
+starts it.
 
 ```text
-usage: android-run.sh [--release] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
+usage: android-run.sh [--app hello|gallery] [--release] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
 ```
 
 ## Your app
@@ -39,8 +41,8 @@ pub fn main() {
 On Android `run` returns at once: `RuneView` starts the app in its first surface. Declare
 `ly.anoma.rune.RuneActivity` in the manifest with the configuration changes Rune handles
 (`orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density`), so a
-rotation resizes the surface instead of recreating the activity; `examples/android-hello/android`
-is a complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
+rotation resizes the surface instead of recreating the activity; `examples/android-host` is a
+complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 
 ## What the host does
 
@@ -54,8 +56,14 @@ is a complete project. The `ly.anoma.rune.lib_name` meta-data names another libr
   instead of resizing it, and only raises the bottom safe area. A keyboard opening in portrait
   never reads as a wide, short window.
 - **Appearance**: the system's dark mode at launch and on change.
+- **Touch**: every finger of a `MotionEvent` (with the samples batched since the last frame, for
+  a fling's velocity) goes to Rune's touch handling: a tap clicks, a drag scrolls and flings, a
+  finger held for the system's long-press delay (`ViewConfiguration.getLongPressTimeout()`, which
+  the accessibility Touch & hold delay raises) is a secondary click. `Cx::touch_controls` and
+  `Cx::hover_none` are true. `Tx::popup_menu` has no native menu yet and answers `None`, so an
+  app draws its own (rune-kit's menus do).
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
-Not yet: touch input, text input (`InputConnection`), accessibility (TalkBack), the clipboard,
+Not yet: text input (`InputConnection`), accessibility (TalkBack), the clipboard,
 links, file pickers and system fonts.

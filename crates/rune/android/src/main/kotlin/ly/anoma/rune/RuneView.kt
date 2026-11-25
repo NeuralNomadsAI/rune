@@ -6,8 +6,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Choreographer
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 
 /**
@@ -24,7 +26,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private val later = Runnable { schedule(0) }
 
     init {
-        handle = nativeNew(resources.displayMetrics.density, isDark(resources.configuration))
+        handle = nativeNew(resources.displayMetrics.density, ViewConfiguration.getLongPressTimeout(), isDark(resources.configuration))
         check(handle != 0L) { "rune: the app didn't start (see logcat)" }
         holder.addCallback(this)
         isFocusable = true
@@ -52,6 +54,23 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     override fun doFrame(frameTimeNanos: Long) {
         frameQueued = false
         schedule(nativeFrame(handle))
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val n = event.pointerCount
+        val ids = IntArray(n) { event.getPointerId(it) }
+        val xs = FloatArray(n)
+        val ys = FloatArray(n)
+        // Samples batched since the last frame first, so Rune measures a fling's velocity.
+        if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+            for (h in 0 until event.historySize) {
+                for (i in 0 until n) { xs[i] = event.getHistoricalX(i, h); ys[i] = event.getHistoricalY(i, h) }
+                nativeTouch(handle, MotionEvent.ACTION_MOVE, 0, ids, xs, ys, event.getHistoricalEventTime(h))
+            }
+        }
+        for (i in 0 until n) { xs[i] = event.getX(i); ys[i] = event.getY(i) }
+        schedule(nativeTouch(handle, event.actionMasked, event.actionIndex, ids, xs, ys, event.eventTime))
+        return true
     }
 
     fun resume() = schedule(nativeResumed(handle))
@@ -118,7 +137,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private fun isDark(config: Configuration) =
         config.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
-    private external fun nativeNew(density: Float, dark: Boolean): Long
+    private external fun nativeNew(density: Float, longPressMs: Int, dark: Boolean): Long
     private external fun nativeSurfaceCreated(handle: Long, surface: android.view.Surface, width: Int, height: Int): Long
     private external fun nativeSurfaceChanged(handle: Long, width: Int, height: Int): Long
     private external fun nativeSurfaceDestroyed(handle: Long)
@@ -130,6 +149,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         barTop: Float, barRight: Float, barBottom: Float, barLeft: Float,
         imeTop: Float, imeRight: Float, imeBottom: Float, imeLeft: Float,
     ): Long
+    private external fun nativeTouch(handle: Long, action: Int, index: Int, ids: IntArray, xs: FloatArray, ys: FloatArray, timeMs: Long): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
     private external fun nativeBack(handle: Long): Boolean
     private external fun nativeDrop(handle: Long)

@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "rune-android-hello"
+rootProject.name = "rune-android-example"
