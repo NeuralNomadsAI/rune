@@ -26,7 +26,7 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     col().w_full().h_full().center().gap(16.0).fill(t.bg).child(label).child(switch)
 }
 
-fn main() {
+pub(crate) fn main() {
     rune::run(AppSpec::<State> {
         scenes: &[("on", |s| s.on = true)],
         ..AppSpec::new("Hello", (320.0, 200.0), State::default, view)

@@ -236,6 +236,8 @@ impl Gpu {
         let required_limits = if adapter_limits.max_inter_stage_shader_variables < wgpu::Limits::default().max_inter_stage_shader_variables
             || adapter_limits.max_color_attachments < wgpu::Limits::default().max_color_attachments
             || adapter_limits.max_compute_workgroup_storage_size < wgpu::Limits::default().max_compute_workgroup_storage_size
+            // GLES drivers on Android (the emulator's, older phones') bind 16 KB uniforms.
+            || adapter_limits.max_uniform_buffer_binding_size < wgpu::Limits::default().max_uniform_buffer_binding_size
         {
             wgpu::Limits {
                 max_immediate_size,

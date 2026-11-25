@@ -9,9 +9,11 @@ pub(crate) mod desktop_settings;
 pub(crate) mod display_link;
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) mod display_link_machine;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(test, target_os = "android"))]
+pub mod android;
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 pub mod embed;
-#[cfg(any(test, target_vendor = "apple"))]
+#[cfg(any(test, target_vendor = "apple", target_os = "android"))]
 pub(crate) mod embed_frame;
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) mod gl_links;
@@ -50,3 +52,23 @@ pub(crate) mod win32_backdrop;
 pub(crate) mod win32_layered;
 #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
 pub(crate) mod x11;
+
+/// Exports `f` (a `fn()` that calls [`run`](crate::run)) as the entry point Android's
+/// `RuneView` calls (`ANDROID.md`). Expands to nothing on other targets, so a crate that builds
+/// both a binary and an Android `cdylib` can share its `main`.
+///
+/// ```ignore
+/// rune::android_main!(main);
+/// pub fn main() { rune::run(rune::AppSpec::new("Hello", (320.0, 200.0), || (), view)) }
+/// ```
+#[macro_export]
+macro_rules! android_main {
+    ($f:path) => {
+        #[cfg(target_os = "android")]
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        extern "C" fn rune_android_main() {
+            $f()
+        }
+    };
+}

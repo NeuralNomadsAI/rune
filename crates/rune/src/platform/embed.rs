@@ -1,5 +1,6 @@
-//! Embedded `CAMetalLayer` host for UIKit, SwiftUI and AppKit views that own their own window
-//! and event loop (e.g. a `UIViewRepresentable` driven by `CADisplayLink` on iOS).
+//! Embedded host for native views that own their own window and event loop: a `CAMetalLayer`
+//! under UIKit, SwiftUI or AppKit (e.g. a `UIViewRepresentable` driven by `CADisplayLink` on
+//! iOS), or an Android `ANativeWindow` driven by `Choreographer`.
 
 #![allow(unsafe_code)]
 
@@ -76,7 +77,9 @@ pub(crate) struct PreparedEmbedFrame {
 
 struct LayerHostCore {
     gpu: Arc<Gpu>,
-    surface: wgpu::Surface<'static>,
+    /// `None` while the platform has taken the window away (Android between
+    /// `surfaceDestroyed` and the next `surfaceCreated`): the runtime and its state live on.
+    surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
     clock: FrameClock,
@@ -84,35 +87,55 @@ struct LayerHostCore {
     surface_health: EmbedSurfaceHealth,
 }
 
+#[cfg(target_os = "android")]
+fn android_target(window: std::ptr::NonNull<c_void>) -> wgpu::SurfaceTargetUnsafe {
+    use wgpu::rwh::{AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle};
+    wgpu::SurfaceTargetUnsafe::RawHandle {
+        raw_display_handle: Some(RawDisplayHandle::Android(AndroidDisplayHandle::new())),
+        raw_window_handle: RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(window)),
+    }
+}
+
+fn pixel_size(gpu: &Gpu, viewport: (f32, f32), scale: f32) -> (u32, u32) {
+    let max_dim = gpu.device.limits().max_texture_dimension_2d.max(1);
+    let px_w = ((viewport.0.max(1.0) * scale).round() as u32).clamp(1, max_dim);
+    let px_h = ((viewport.1.max(1.0) * scale).round() as u32).clamp(1, max_dim);
+    (px_w, px_h)
+}
+
+/// A configured surface for `target`, sized for `viewport` points at `scale`.
+///
+/// # Safety
+/// `target` must stay valid for as long as the returned surface lives, on the UI thread.
+unsafe fn configured_surface(
+    gpu: &Gpu,
+    target: wgpu::SurfaceTargetUnsafe,
+    viewport: (f32, f32),
+    scale: f32,
+) -> Result<(wgpu::Surface<'static>, wgpu::SurfaceConfiguration), String> {
+    // SAFETY: the caller keeps `target` valid for the surface's lifetime, on the UI thread.
+    let surface = unsafe { gpu.instance.create_surface_unsafe(target) }.map_err(|e| format!("create_surface_unsafe: {e}"))?;
+    let (config, _) = crate::window::surface_config(&surface, &gpu.adapter, pixel_size(gpu, viewport, scale), true)
+        .ok_or_else(|| "the native layer has no supported wgpu surface configuration".to_owned())?;
+    crate::window::configure(&surface, gpu, &config)?;
+    Ok((surface, config))
+}
+
 impl LayerHostCore {
-    unsafe fn new(layer: *mut c_void, viewport: (f32, f32), scale: f32) -> Result<(Self, (f32, f32), f32, Instant), String> {
-        if layer.is_null() {
-            return Err("null CAMetalLayer pointer".into());
-        }
+    unsafe fn new(target: wgpu::SurfaceTargetUnsafe, viewport: (f32, f32), scale: f32) -> Result<(Self, (f32, f32), f32, Instant), String> {
         let gpu = shared_gpu()?;
-        // SAFETY: caller guarantees non-null `layer` is a valid `CAMetalLayer` outliving this surface on an allowed thread.
-        let surface = unsafe {
-            gpu.instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
-                .map_err(|e| format!("create_surface_unsafe: {e}"))?
-        };
         let scale = scale.max(1.0);
-        let max_dim = gpu.device.limits().max_texture_dimension_2d.max(1);
-        let px_w = ((viewport.0.max(1.0) * scale).round() as u32).clamp(1, max_dim);
-        let px_h = ((viewport.1.max(1.0) * scale).round() as u32).clamp(1, max_dim);
-        let srgb_blend = true;
-        let (config, _) = crate::window::surface_config(&surface, &gpu.adapter, (px_w, px_h), srgb_blend)
-            .ok_or_else(|| "CAMetalLayer has no supported wgpu surface configuration".to_owned())?;
-        crate::window::configure(&surface, &gpu, &config)?;
+        // SAFETY: forwarded from the constructor's contract on `target`.
+        let (surface, config) = unsafe { configured_surface(&gpu, target, viewport, scale) }?;
         let target_format = config.format.remove_srgb_suffix();
         let mut renderer = Renderer::try_new(&gpu.device, target_format)?;
         renderer.attach_gpu(&gpu);
         renderer.set_srgb_blend(true);
-        let size = (px_w as f32 / scale, px_h as f32 / scale);
+        let size = (config.width as f32 / scale, config.height as f32 / scale);
         let now = crate::time::now();
         let core = Self {
             gpu,
-            surface,
+            surface: Some(surface),
             config,
             renderer,
             clock: FrameClock::new(now),
@@ -120,6 +143,30 @@ impl LayerHostCore {
             surface_health: EmbedSurfaceHealth::default(),
         };
         Ok((core, size, scale, now))
+    }
+
+    /// Drops the surface; frames stay suspended until [`Self::attach`].
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn detach(&mut self) {
+        self.surface = None;
+        self.suspended = true;
+    }
+
+    /// Takes a new window after [`Self::detach`] (or in place of the current one).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    unsafe fn attach(&mut self, rt: &mut RuntimeCore, target: wgpu::SurfaceTargetUnsafe, viewport: (f32, f32), scale: f32) -> Result<(), String> {
+        self.surface = None;
+        let scale = scale.max(1.0);
+        // SAFETY: forwarded from the caller's contract on `target`.
+        let (surface, config) = unsafe { configured_surface(&self.gpu, target, viewport, scale) }?;
+        self.surface = Some(surface);
+        self.config = config;
+        self.surface_health.step(EmbedSurfaceEvent::Resized);
+        self.suspended = viewport.0 <= 0.0 || viewport.1 <= 0.0;
+        let target_format = if rt.srgb_blend() { self.config.format.remove_srgb_suffix() } else { self.config.format };
+        crate::window::rebuild_renderer_core(&self.gpu.device, &mut self.renderer, target_format, rt);
+        rt.set_viewport((self.config.width as f32 / scale, self.config.height as f32 / scale), scale);
+        Ok(())
     }
 
     fn configure_runtime(&mut self, rt: &mut RuntimeCore, now: Instant) {
@@ -133,6 +180,7 @@ impl LayerHostCore {
     }
 
     fn resize(&mut self, rt: &mut RuntimeCore, viewport: (f32, f32), scale: f32) {
+        let Some(surface) = &self.surface else { return };
         if viewport.0 <= 0.0 || viewport.1 <= 0.0 {
             self.suspended = true;
             return;
@@ -140,13 +188,11 @@ impl LayerHostCore {
         self.suspended = false;
         self.surface_health.step(EmbedSurfaceEvent::Resized);
         let scale = scale.max(1.0);
-        let max_dim = self.gpu.device.limits().max_texture_dimension_2d.max(1);
-        let px_w = ((viewport.0 * scale).round() as u32).clamp(1, max_dim);
-        let px_h = ((viewport.1 * scale).round() as u32).clamp(1, max_dim);
+        let (px_w, px_h) = pixel_size(&self.gpu, viewport, scale);
         if self.config.width != px_w || self.config.height != px_h {
             self.config.width = px_w;
             self.config.height = px_h;
-            if let Err(error) = crate::window::configure(&self.surface, &self.gpu, &self.config) {
+            if let Err(error) = crate::window::configure(surface, &self.gpu, &self.config) {
                 eprintln!("rune: embedded layer surface refused its new size: {error}");
             }
         }
@@ -155,12 +201,13 @@ impl LayerHostCore {
 
     /// Acquires the next drawable, reconfiguring and retrying once on `Outdated`/`Lost`.
     fn acquire(&mut self) -> Acquire<wgpu::SurfaceTexture> {
+        let Some(surface) = &self.surface else { return Acquire::Missed(Missed::Unconfigured) };
         let mut retries = 1u8;
         loop {
-            match self.surface.get_current_texture() {
+            match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => return Acquire::Ready(f),
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    if let Err(error) = crate::window::configure(&self.surface, &self.gpu, &self.config) {
+                    if let Err(error) = crate::window::configure(surface, &self.gpu, &self.config) {
                         eprintln!("rune: embedded layer surface refused reconfiguration: {error}");
                         return Acquire::Missed(Missed::Unconfigured);
                     }
@@ -173,8 +220,9 @@ impl LayerHostCore {
     }
 
     fn reblend(&mut self, rt: &mut RuntimeCore) -> bool {
+        let Some(surface) = &self.surface else { return false };
         let mut alpha = None;
-        crate::window::reblend_core(&self.surface, &self.gpu, &mut self.config, &mut self.renderer, &mut alpha, rt)
+        crate::window::reblend_core(surface, &self.gpu, &mut self.config, &mut self.renderer, &mut alpha, rt)
     }
 
     fn prepare_draw(&mut self, rt: &mut RuntimeCore, frame: wgpu::SurfaceTexture) -> PreparedEmbedFrame {
@@ -222,6 +270,7 @@ impl<S: 'static> LayerHost<S> {
     /// # Safety
     /// `layer` must be a valid `CAMetalLayer` pointer that outlives this `LayerHost`, and surface
     /// creation / presentation must run on a thread allowed to touch that layer (the UI thread).
+    #[cfg(target_vendor = "apple")]
     pub unsafe fn from_core_animation_layer(
         layer: *mut c_void,
         spec: &AppSpec<S>,
@@ -231,8 +280,61 @@ impl<S: 'static> LayerHost<S> {
         dark: bool,
         wake: Waker,
     ) -> Result<Self, String> {
+        if layer.is_null() {
+            return Err("null CAMetalLayer pointer".into());
+        }
         // SAFETY: caller upholds `from_core_animation_layer`'s safety contract (`layer` is a valid `CAMetalLayer` outliving `LayerHost`, on the UI thread).
-        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(layer, viewport, scale) }?;
+        unsafe { Self::new(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer), spec, state, viewport, scale, dark, wake) }
+    }
+
+    /// Attaches a new Rune runtime and Vulkan (or GLES) surface to `window` (`ANativeWindow *`).
+    ///
+    /// # Safety
+    /// `window` must be a valid `ANativeWindow` the caller holds a reference on until
+    /// [`Self::detach_surface`] or drop, and every call must run on the UI thread.
+    #[cfg(target_os = "android")]
+    pub unsafe fn from_android_window(
+        window: std::ptr::NonNull<c_void>,
+        spec: &AppSpec<S>,
+        state: S,
+        viewport: (f32, f32),
+        scale: f32,
+        dark: bool,
+        wake: Waker,
+    ) -> Result<Self, String> {
+        // SAFETY: forwarded from this constructor's contract on `window`.
+        unsafe { Self::new(android_target(window), spec, state, viewport, scale, dark, wake) }
+    }
+
+    /// Takes a new `ANativeWindow` after the platform destroyed the last one; the runtime and
+    /// its state carry over.
+    ///
+    /// # Safety
+    /// As for [`Self::from_android_window`].
+    #[cfg(target_os = "android")]
+    pub unsafe fn attach_android_window(&mut self, window: std::ptr::NonNull<c_void>, viewport: (f32, f32), scale: f32) -> Result<(), String> {
+        // SAFETY: forwarded from this method's contract on `window`.
+        unsafe { self.core.attach(self.rt.core_mut(), android_target(window), viewport, scale) }
+    }
+
+    /// Releases the surface (Android `surfaceDestroyed`): frames stop until a new window is
+    /// attached, and the caller may then release its `ANativeWindow` reference.
+    #[cfg(target_os = "android")]
+    pub fn detach_surface(&mut self) {
+        self.core.detach();
+    }
+
+    unsafe fn new(
+        target: wgpu::SurfaceTargetUnsafe,
+        spec: &AppSpec<S>,
+        state: S,
+        viewport: (f32, f32),
+        scale: f32,
+        dark: bool,
+        wake: Waker,
+    ) -> Result<Self, String> {
+        // SAFETY: forwarded from the public constructors' contracts on `target`.
+        let (mut core, size, scale, now) = unsafe { LayerHostCore::new(target, viewport, scale) }?;
         let mut rt = runtime_for(spec, state, size, Env::new(dark, scale), wake);
         core.configure_runtime(rt.core_mut(), now);
         Ok(Self { core, compositor: None, rt })

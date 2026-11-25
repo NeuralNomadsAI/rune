@@ -4,16 +4,16 @@ use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::{ControlFlow, EventLoop};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use crate::app::App;
 use crate::tooling::Args;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use crate::windows::WindowSpec;
 #[cfg(not(target_arch = "wasm32"))]
 use super::{WakeEvent, Windows};
 use super::Factory;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run<S: 'static>(app: App<S>, args: Args) -> Result<(), String> {
     let accessory = app.accessory;
     run_configured(Box::new(move |_| vec![WindowSpec::from_app("main", app).into()]), args, accessory)

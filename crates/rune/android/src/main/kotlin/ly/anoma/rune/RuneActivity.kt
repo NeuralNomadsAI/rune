@@ -1,0 +1,67 @@
+package ly.anoma.rune
+
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.os.Build
+import android.os.Bundle
+import android.view.WindowManager
+import android.window.OnBackInvokedDispatcher
+
+/**
+ * An activity showing one [RuneView]. It loads the native library named by the
+ * `ly.anoma.rune.lib_name` meta-data (default `main`), whose `rune::android_main!` function
+ * starts the app. The manifest should declare the configuration changes Rune handles itself
+ * (`orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density`), so
+ * a rotation doesn't recreate the activity.
+ */
+open class RuneActivity : Activity() {
+    protected lateinit var view: RuneView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        System.loadLibrary(libraryName())
+        // The keyboard covers the window instead of resizing it; Rune raises its bottom safe area.
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) window.setDecorFitsSystemWindows(false)
+        view = RuneView(this)
+        setContentView(view)
+        view.requestFocus()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
+        }
+    }
+
+    @Deprecated("Rune handles back through OnBackInvokedDispatcher on API 33 and later")
+    override fun onBackPressed() = goBack()
+
+    private fun goBack() {
+        if (view.back()) return
+        if (isTaskRoot) moveTaskToBack(true) else finish()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        view.resume()
+    }
+
+    override fun onPause() {
+        view.pause()
+        super.onPause()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        view.configurationChanged(newConfig)
+    }
+
+    override fun onDestroy() {
+        view.destroy()
+        super.onDestroy()
+    }
+
+    private fun libraryName(): String {
+        val info = packageManager.getActivityInfo(componentName, PackageManager.GET_META_DATA)
+        return info.metaData?.getString("ly.anoma.rune.lib_name") ?: "main"
+    }
+}

@@ -1290,7 +1290,14 @@ impl<S: 'static> App<S> {
         self.try_run_start().map_err(crate::tooling::StartError::message)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    /// On Android the activity owns the loop: `run` hands the app to `RuneView`, which starts
+    /// it in its first window and returns at once.
+    #[cfg(target_os = "android")]
+    fn try_run_start(self) -> Result<(), crate::tooling::StartError> {
+        crate::platform::android::register(self).map_err(crate::tooling::StartError::Window)
+    }
+
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn try_run_start(mut self) -> Result<(), crate::tooling::StartError> {
         // Windows' word dictionaries start loading now, on their own thread (`rune_text::segmenter`).
         #[cfg(all(target_os = "windows", not(feature = "segmenter-dictionaries")))]

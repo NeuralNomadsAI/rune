@@ -143,9 +143,12 @@ libc = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { workspace = true }
 
-# winit's Android backend needs one activity glue to build; no Android host drives it yet.
+# winit's Android backend needs one activity glue to build; Rune's own host
+# (`platform::android`) drives the app instead, through JNI and the NDK's `ANativeWindow`.
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }
+jni-sys = "0.3"
+ndk-sys = "0.6"
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), not(target_os = "android")))'.dependencies]
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }

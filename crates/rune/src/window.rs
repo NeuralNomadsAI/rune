@@ -87,7 +87,7 @@ pub use cpu_first::CpuFirst;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use cpu_first::WebStart;
 pub use handle::WindowHandle;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use event_loop::run;
 #[cfg(test)]
 pub(crate) use event_loop::finish_run;

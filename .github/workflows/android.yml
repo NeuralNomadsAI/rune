@@ -42,3 +42,19 @@ jobs:
           echo "CARGO_TARGET_${var^^}_LINKER=$bin/${triple}24-clang" >> "$GITHUB_ENV"
       - run: cargo check --locked --target ${{ matrix.target }} -p rune --features "$RUNE_FEATURES"
       - run: cargo check --locked --target ${{ matrix.target }} -p rune-kit --features markdown,mermaid
+
+  # examples/android-hello as an APK: the Kotlin host compiles and libmain.so links.
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup target add aarch64-linux-android
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: "9.9.2"
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      - run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" scripts/android-run.sh --target aarch64-linux-android --build-only
