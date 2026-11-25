@@ -14,16 +14,6 @@ use super::host::{Next, View};
 use super::host_ime::ImeBridge;
 use super::lifecycle::{Event, Insets};
 
-/// Calls an entry of a JNI function table, which the VM always fills.
-macro_rules! call {
-    ($table:expr, $f:ident($($arg:expr),*)) => {
-        match (**$table).$f {
-            Some(f) => f($table $(, $arg)*),
-            None => unreachable!(concat!("JNI table without ", stringify!($f))),
-        }
-    };
-}
-
 unsafe extern "C" {
     /// Defined by the app's `android_main!`.
     fn rune_android_main();
@@ -187,7 +177,7 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeInsets(
 ///
 /// # Safety
 /// `s` is a live `java.lang.String` reference or null.
-unsafe fn java_string(env: *mut JNIEnv, s: jstring) -> String {
+pub(super) unsafe fn java_string(env: *mut JNIEnv, s: jstring) -> String {
     if s.is_null() { return String::new() }
     // SAFETY: per this function's contract; the characters are released before returning.
     unsafe {

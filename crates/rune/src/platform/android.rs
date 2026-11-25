@@ -4,6 +4,17 @@
 //! on Android: an app's `cdylib` names the function that calls [`run`](crate::run) with
 //! [`android_main!`](crate::android_main), and `RuneView` calls it when it's created.
 
+/// Calls an entry of a JNI function table, which the VM always fills.
+#[cfg(target_os = "android")]
+macro_rules! call {
+    ($table:expr, $f:ident($($arg:expr),*)) => {
+        match (**$table).$f {
+            Some(f) => f($table $(, $arg)*),
+            None => unreachable!(concat!("JNI table without ", stringify!($f))),
+        }
+    };
+}
+
 #[cfg(target_os = "android")]
 mod host;
 #[cfg(target_os = "android")]
@@ -21,6 +32,8 @@ pub(crate) mod lifecycle;
 mod lifecycle_tests;
 #[cfg(target_os = "android")]
 mod logcat;
+#[cfg(target_os = "android")]
+pub(crate) mod services;
 pub(crate) mod touch;
 #[cfg(test)]
 mod touch_tests;

@@ -105,13 +105,16 @@ pub(super) struct View {
     insets: Insets,
     wake: Waker,
     ime: ImeBridge,
+    clipboard: crate::clipboard::Client,
 }
 
 impl View {
     /// `None` when no app called `run` from its `android_main!` function.
     pub(super) fn new(density: f32, long_press: f64, dark: bool, wake: Waker) -> Option<Self> {
         let start = take_registered()?;
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default() })
+        let mut clipboard = crate::clipboard::Client::default();
+        clipboard.connect(wake.clone());
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), clipboard })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -135,7 +138,12 @@ impl View {
                 }
                 Effect::Detach => if let Some(host) = &mut self.host { host.detach() },
                 Effect::Draw => {
-                    if let Some(host) = &mut self.host { next = host.frame().into() }
+                    if let Some(host) = &mut self.host {
+                        // Clipboard replies land before the frame; what it copies or asks for leaves after.
+                        self.clipboard.receive_core(host.core());
+                        next = host.frame().into();
+                        self.clipboard.flush_core(host.core());
+                    }
                     self.sync_ime();
                 }
             }
@@ -153,6 +161,8 @@ impl View {
         let mut host = start(window, viewport, self.density, self.dark, self.wake.clone())?;
         host.set_safe_area(lifecycle::safe_area(self.insets, self.density));
         host.set_long_press(self.long_press);
+        // Links go to the system (Intent.ACTION_VIEW), with its answer.
+        host.core().host.open_urls_natively = true;
         self.host = Some(host);
         Ok(())
     }

@@ -39,6 +39,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private val keyboard = context.getSystemService(InputMethodManager::class.java)
 
     init {
+        RuneServices.install(context)
         handle = nativeNew(resources.displayMetrics.density, ViewConfiguration.getLongPressTimeout(), isDark(resources.configuration))
         check(handle != 0L) { "rune: the app didn't start (see logcat)" }
         holder.addCallback(this)

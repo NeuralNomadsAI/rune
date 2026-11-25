@@ -325,7 +325,13 @@ fn open(url: &str) -> Result<(), OpenUrlError> {
     Ok(())
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "windows", all(unix, not(any(target_os = "ios", target_os = "android"))))))]
+/// `Intent.ACTION_VIEW`: the error is the system's own (no app opens this link).
+#[cfg(target_os = "android")]
+fn open(url: &str) -> Result<(), OpenUrlError> {
+    crate::platform::android::services::open_url(url).map_err(OpenUrlError::Failed)
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "windows", target_os = "android", all(unix, not(any(target_os = "ios", target_os = "android"))))))]
 fn open(_: &str) -> Result<(), OpenUrlError> { Err(OpenUrlError::Failed("this platform can't open links".into())) }
 
 #[cfg(test)]

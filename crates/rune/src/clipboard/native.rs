@@ -57,9 +57,14 @@ fn worker() -> &'static mpsc::Sender<Request> {
     &WORKER.get_or_init(|| Worker::spawn(|| arboard::Clipboard::new().ok())).sender
 }
 
-#[cfg(any(target_os = "ios", target_os = "android"))]
+#[cfg(target_os = "ios")]
 fn worker() -> &'static mpsc::Sender<Request> {
     &WORKER.get_or_init(|| Worker::spawn(|| None::<Board>)).sender
+}
+
+#[cfg(target_os = "android")]
+fn worker() -> &'static mpsc::Sender<Request> {
+    &WORKER.get_or_init(|| Worker::spawn(|| Some(android::Board))).sender
 }
 
 /// Called by the shared event-loop exit path, including overlay-only applications.
@@ -186,7 +191,10 @@ pub(super) fn revision() -> Option<u64> {
     #[cfg(target_os = "windows")]
     // SAFETY: `GetClipboardSequenceNumber` takes no pointers and is safe to call from any thread.
     { return Some(unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() } as u64); }
-    // Linux, iOS and Android have no portable generation counter; compare the current text.
+    // `ClipboardManager`'s change listener counts.
+    #[cfg(target_os = "android")]
+    { return Some(crate::platform::android::services::clipboard_revision()); }
+    // Linux and iOS have no portable generation counter; compare the current text.
     #[allow(unreachable_code)]
     None
 }

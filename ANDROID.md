@@ -74,8 +74,13 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Fonts**: a character the app's fonts lack draws with the system's font for its script, from
   `/system/etc/fonts.xml` and `/system/fonts` (CJK, Arabic, Indic scripts, colour emoji, symbols),
   loaded the first time a text needs it.
+- **Clipboard**: text and one image through `ClipboardManager`; a copied image is served by
+  `RuneClipboardProvider`, which the manifest declares with the authority
+  `${applicationId}.rune.clipboard`. A secret copy is marked sensitive. `clipboard::revision` counts
+  the system's clipboard changes.
+- **Links**: `Tx::open_url` starts `Intent.ACTION_VIEW`; `Tx::open_url_then` reports a failure when no
+  app takes the link.
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
-Not yet: accessibility (TalkBack), the clipboard,
-links and file pickers.
+Not yet: accessibility (TalkBack) and file pickers.

@@ -21,6 +21,9 @@ use crate::machine::Seq;
 use crate::Runtime;
 use crate::Waker;
 
+#[cfg(any(test, target_os = "android"))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod android;
 mod content;
 mod html;
 mod secret;
