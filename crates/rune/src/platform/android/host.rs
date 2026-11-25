@@ -10,8 +10,9 @@ use std::ptr::NonNull;
 use super::lifecycle::{self, Effect, Event, Insets};
 use crate::app::App;
 use crate::embed::{EmbedFrame, LayerHost};
-use crate::runtime::Waker;
-use crate::{Key, KeyEvent, TouchPhase};
+use crate::input::host_events::{ImeSync, ime_sync_step};
+use crate::runtime::{RuntimeCore, Waker};
+use crate::{Ime, Key, KeyEvent, TouchPhase};
 
 /// What `RuneView` needs from a running app, with its state type erased.
 pub(super) trait Host {
@@ -29,6 +30,7 @@ pub(super) trait Host {
     /// The system back gesture: Escape when something has focus (closing what's open, or
     /// leaving a field), false to let the activity go back.
     fn back(&mut self) -> bool;
+    fn core(&mut self) -> &mut RuntimeCore;
 }
 
 impl<S: 'static> Host for LayerHost<S> {
@@ -49,6 +51,7 @@ impl<S: 'static> Host for LayerHost<S> {
         rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
         true
     }
+    fn core(&mut self) -> &mut RuntimeCore { self.runtime_mut().core_mut() }
 }
 
 type Start = Box<dyn FnOnce(NonNull<c_void>, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Host>, String>>;
@@ -91,6 +94,18 @@ impl From<EmbedFrame> for Next {
     }
 }
 
+/// What the on-screen keyboard should do after a frame, for `RuneView` to carry out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Keyboard {
+    #[default]
+    Unchanged = 0,
+    Show = 1,
+    Hide = 2,
+    /// The field's text changed under the input method (a new field, a reset composition):
+    /// `InputMethodManager.restartInput`.
+    Restart = 3,
+}
+
 pub(super) struct View {
     lifecycle: lifecycle::State,
     start: Option<Start>,
@@ -101,13 +116,15 @@ pub(super) struct View {
     dark: bool,
     insets: Insets,
     wake: Waker,
+    ime: ImeSync,
+    keyboard: Keyboard,
 }
 
 impl View {
     /// `None` when no app called `run` from its `android_main!` function.
     pub(super) fn new(density: f32, long_press: f64, dark: bool, wake: Waker) -> Option<Self> {
         let start = take_registered()?;
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeSync::default(), keyboard: Keyboard::default() })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -130,7 +147,10 @@ impl View {
                     if let Some(host) = &mut self.host { host.resize(viewport, self.density) }
                 }
                 Effect::Detach => if let Some(host) = &mut self.host { host.detach() },
-                Effect::Draw => if let Some(host) = &mut self.host { next = host.frame().into() },
+                Effect::Draw => {
+                    if let Some(host) = &mut self.host { next = host.frame().into() }
+                    self.sync_ime();
+                }
             }
         }
         next
@@ -171,6 +191,51 @@ impl View {
             let (id, x, y) = pointers[i];
             host.touch(id as u64, phase, x / self.density, y / self.density, time);
         }
+        self.step(Event::Frame, None)
+    }
+
+    /// Turns the runtime's input method state (a focused field wants text, or not; its
+    /// composition was reset) into what the keyboard should do.
+    fn sync_ime(&mut self) {
+        let Some(host) = &mut self.host else { return };
+        let step = ime_sync_step(host.core(), &mut self.ime, true);
+        self.keyboard = match (step.set_allowed, step.cancel) {
+            (Some(true), _) => Keyboard::Show,
+            (Some(false), _) => Keyboard::Hide,
+            (None, true) => Keyboard::Restart,
+            (None, false) => self.keyboard,
+        };
+    }
+
+    pub(super) fn take_keyboard(&mut self) -> Keyboard {
+        std::mem::take(&mut self.keyboard)
+    }
+
+    /// Whether a focused field takes text, so `RuneView` offers an `InputConnection`.
+    pub(super) fn wants_text(&self) -> bool {
+        self.ime.is_enabled()
+    }
+
+    pub(super) fn key(&mut self, ev: KeyEvent, repeat: bool) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        if repeat { host.core().repeat_key(ev) } else { host.core().key(ev) }
+        self.step(Event::Frame, None)
+    }
+
+    pub(super) fn ime(&mut self, ev: Ime) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        host.core().ime(ev);
+        self.step(Event::Frame, None)
+    }
+
+    /// The input method's `finishComposingText`: the composition becomes text as it stands. Not
+    /// `RuntimeCore::finish_composition`, which also tells the input method to drop its copy:
+    /// here the input method is the one finishing, and a reset would restart it in a loop.
+    pub(super) fn finish_composition(&mut self) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        let core = host.core();
+        let Some(text) = core.focused_preedit().map(|(text, _)| text.to_owned()) else { return Next::Idle };
+        core.ime(Ime::Commit(text));
         self.step(Event::Frame, None)
     }
 

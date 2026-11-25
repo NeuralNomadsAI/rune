@@ -8,14 +8,17 @@
 mod host;
 #[cfg(target_os = "android")]
 mod jni;
+pub(crate) mod keys;
+#[cfg(test)]
+mod keys_tests;
 pub(crate) mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(target_os = "android")]
 mod logcat;
 pub(crate) mod touch;
 #[cfg(test)]
 mod touch_tests;
-#[cfg(test)]
-mod lifecycle_tests;
 
 #[cfg(target_os = "android")]
 pub(crate) use host::register;

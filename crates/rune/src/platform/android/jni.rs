@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::ptr::{NonNull, null_mut};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use jni_sys::{JNIEnv, JavaVM, jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject};
+use jni_sys::{JNIEnv, JavaVM, jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject, jstring};
 
 use super::host::{Next, View};
 use super::lifecycle::{Event, Insets};
@@ -179,6 +179,79 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeInsets(
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
     let insets = Insets { bars: [bar_top, bar_right, bar_bottom, bar_left], ime: [ime_top, ime_right, ime_bottom, ime_left] };
     next(h.view.set_insets(insets))
+}
+
+/// A Java string as Rust's, through UTF-16 (JNI's UTF-8 is Java's modified form, which splits
+/// characters outside the BMP, emoji among them, into two).
+///
+/// # Safety
+/// `s` is a live `java.lang.String` reference or null.
+unsafe fn java_string(env: *mut JNIEnv, s: jstring) -> String {
+    if s.is_null() { return String::new() }
+    // SAFETY: per this function's contract; the characters are released before returning.
+    unsafe {
+        let len = call!(env, GetStringLength(s)).max(0) as usize;
+        let chars = call!(env, GetStringChars(s, null_mut()));
+        if chars.is_null() { return String::new() }
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(chars, len));
+        call!(env, ReleaseStringChars(s, chars));
+        text
+    }
+}
+
+/// `nativeKey`'s answer for a key Rune has no name for, which the view leaves to the system.
+const UNHANDLED: jlong = -2;
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeKey(
+    _: *mut JNIEnv, _: jobject, h: jlong, code: jint, unicode: jint, typed: jint, meta: jint, repeat: jboolean,
+) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return UNHANDLED };
+    let Some(ev) = super::keys::key(code, unicode as u32, typed as u32, meta) else { return UNHANDLED };
+    next(h.view.key(ev, repeat != 0))
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeCommit(env: *mut JNIEnv, _: jobject, h: jlong, text: jstring) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    // SAFETY: `text` is the input method's live string.
+    let text = unsafe { java_string(env, text) };
+    next(h.view.ime(crate::Ime::Commit(text)))
+}
+
+/// The composition so far (`setComposingText`), with the cursor at its end; empty ends it.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeCompose(env: *mut JNIEnv, _: jobject, h: jlong, text: jstring) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    // SAFETY: `text` is the input method's live string.
+    let text = unsafe { java_string(env, text) };
+    let end = text.len();
+    next(h.view.ime(crate::Ime::Preedit(text, Some((end, end)), Vec::new())))
+}
+
+/// `finishComposingText`: the composition becomes text as it stands.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeFinishCompose(_: *mut JNIEnv, _: jobject, h: jlong) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    next(h.view.finish_composition())
+}
+
+/// What the keyboard should do now (`Keyboard` as an int), once.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeKeyboard(_: *mut JNIEnv, _: jobject, h: jlong) -> jint {
+    // SAFETY: `h` comes from `nativeNew`.
+    unsafe { handle(h) }.map_or(0, |h| h.view.take_keyboard() as jint)
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeWantsText(_: *mut JNIEnv, _: jobject, h: jlong) -> jboolean {
+    // SAFETY: `h` comes from `nativeNew`.
+    unsafe { handle(h) }.map_or(0, |h| jboolean::from(h.view.wants_text()))
 }
 
 /// Pointers past this many in one event are dropped (Android reports at most ten).

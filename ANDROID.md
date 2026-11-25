@@ -62,8 +62,13 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   the accessibility Touch & hold delay raises) is a secondary click. `Cx::touch_controls` and
   `Cx::hover_none` are true. `Tx::popup_menu` has no native menu yet and answers `None`, so an
   app draws its own (rune-kit's menus do).
+- **Text input**: when a field takes text, `RuneView` offers the input method an
+  `InputConnection` and shows the keyboard (and hides it when the field lets go): committed text,
+  the composition (`setComposingText`, `finishComposingText`), deletions, keys and the editor
+  action reach the field. A hardware keyboard's keys arrive as Rune keys, Ctrl shortcuts included.
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
-Not yet: text input (`InputConnection`), accessibility (TalkBack), the clipboard,
+Not yet: the text around the caret for the input method (`getTextBeforeCursor`, reconversion,
+keyboard images), accessibility (TalkBack), the clipboard,
 links, file pickers and system fonts.
