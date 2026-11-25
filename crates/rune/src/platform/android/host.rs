@@ -10,7 +10,7 @@ use std::ptr::NonNull;
 use super::lifecycle::{self, Effect, Event, Insets};
 use crate::app::App;
 use crate::embed::{EmbedFrame, LayerHost};
-use crate::input::host_events::{ImeSync, ime_sync_step};
+use super::host_ime::{ImeBridge, Keyboard};
 use crate::runtime::{RuntimeCore, Waker};
 use crate::{Ime, Key, KeyEvent, TouchPhase};
 
@@ -94,18 +94,6 @@ impl From<EmbedFrame> for Next {
     }
 }
 
-/// What the on-screen keyboard should do after a frame, for `RuneView` to carry out.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Keyboard {
-    #[default]
-    Unchanged = 0,
-    Show = 1,
-    Hide = 2,
-    /// The field's text changed under the input method (a new field, a reset composition):
-    /// `InputMethodManager.restartInput`.
-    Restart = 3,
-}
-
 pub(super) struct View {
     lifecycle: lifecycle::State,
     start: Option<Start>,
@@ -116,15 +104,14 @@ pub(super) struct View {
     dark: bool,
     insets: Insets,
     wake: Waker,
-    ime: ImeSync,
-    keyboard: Keyboard,
+    ime: ImeBridge,
 }
 
 impl View {
     /// `None` when no app called `run` from its `android_main!` function.
     pub(super) fn new(density: f32, long_press: f64, dark: bool, wake: Waker) -> Option<Self> {
         let start = take_registered()?;
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeSync::default(), keyboard: Keyboard::default() })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default() })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -194,26 +181,27 @@ impl View {
         self.step(Event::Frame, None)
     }
 
-    /// Turns the runtime's input method state (a focused field wants text, or not; its
-    /// composition was reset) into what the keyboard should do.
     fn sync_ime(&mut self) {
-        let Some(host) = &mut self.host else { return };
-        let step = ime_sync_step(host.core(), &mut self.ime, true);
-        self.keyboard = match (step.set_allowed, step.cancel) {
-            (Some(true), _) => Keyboard::Show,
-            (Some(false), _) => Keyboard::Hide,
-            (None, true) => Keyboard::Restart,
-            (None, false) => self.keyboard,
-        };
+        if let Some(host) = &mut self.host { self.ime.after_frame(host.core()) }
     }
 
     pub(super) fn take_keyboard(&mut self) -> Keyboard {
-        std::mem::take(&mut self.keyboard)
+        self.ime.take_keyboard()
     }
 
     /// Whether a focused field takes text, so `RuneView` offers an `InputConnection`.
     pub(super) fn wants_text(&self) -> bool {
-        self.ime.is_enabled()
+        self.ime.wants_text()
+    }
+
+    pub(super) fn ime_bridge(&self) -> &ImeBridge {
+        &self.ime
+    }
+
+    /// Runs `f` on the runtime with the IME bridge, then a frame when it says something changed.
+    pub(super) fn with_ime(&mut self, f: impl FnOnce(&ImeBridge, &mut RuntimeCore) -> bool) -> Option<Next> {
+        let host = self.host.as_mut()?;
+        f(&self.ime, host.core()).then(|| self.step(Event::Frame, None))
     }
 
     pub(super) fn key(&mut self, ev: KeyEvent, repeat: bool) -> Next {
@@ -225,17 +213,6 @@ impl View {
     pub(super) fn ime(&mut self, ev: Ime) -> Next {
         let Some(host) = &mut self.host else { return Next::Idle };
         host.core().ime(ev);
-        self.step(Event::Frame, None)
-    }
-
-    /// The input method's `finishComposingText`: the composition becomes text as it stands. Not
-    /// `RuntimeCore::finish_composition`, which also tells the input method to drop its copy:
-    /// here the input method is the one finishing, and a reset would restart it in a loop.
-    pub(super) fn finish_composition(&mut self) -> Next {
-        let Some(host) = &mut self.host else { return Next::Idle };
-        let core = host.core();
-        let Some(text) = core.focused_preedit().map(|(text, _)| text.to_owned()) else { return Next::Idle };
-        core.ime(Ime::Commit(text));
         self.step(Event::Frame, None)
     }
 

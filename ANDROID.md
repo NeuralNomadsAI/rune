@@ -65,10 +65,14 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Text input**: when a field takes text, `RuneView` offers the input method an
   `InputConnection` and shows the keyboard (and hides it when the field lets go): committed text,
   the composition (`setComposingText`, `finishComposingText`), deletions, keys and the editor
-  action reach the field. A hardware keyboard's keys arrive as Rune keys, Ctrl shortcuts included.
+  action reach the field. The input method reads the caret's paragraph (`getTextBeforeCursor`,
+  `getTextAfterCursor`, `getSelectedText`, `getExtractedText`) in UTF-16 offsets, follows the
+  selection (`updateSelection`), takes text back to recompose it (`setComposingRegion`) and deletes
+  around the caret by range. A keyboard's image (`commitContent`: a sticker, a GIF's first frame) is
+  decoded off the UI thread and pasted as PNG. A hardware keyboard's keys arrive as Rune keys, Ctrl
+  shortcuts included.
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
-Not yet: the text around the caret for the input method (`getTextBeforeCursor`, reconversion,
-keyboard images), accessibility (TalkBack), the clipboard,
+Not yet: accessibility (TalkBack), the clipboard,
 links, file pickers and system fonts.

@@ -8,9 +8,10 @@ use std::ffi::c_void;
 use std::ptr::{NonNull, null_mut};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use jni_sys::{JNIEnv, JavaVM, jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject, jstring};
+use jni_sys::{JNIEnv, JavaVM, jboolean, jbyteArray, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject, jstring};
 
 use super::host::{Next, View};
+use super::host_ime::ImeBridge;
 use super::lifecycle::{Event, Insets};
 
 /// Calls an entry of a JNI function table, which the VM always fills.
@@ -238,7 +239,58 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeCompose(env: *mut JNIEnv, _
 extern "system" fn Java_ly_anoma_rune_RuneView_nativeFinishCompose(_: *mut JNIEnv, _: jobject, h: jlong) -> jlong {
     // SAFETY: `h` comes from `nativeNew`.
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
-    next(h.view.finish_composition())
+    next(h.view.with_ime(|_, core| ImeBridge::finish_composition(core)).unwrap_or(Next::Idle))
+}
+
+/// `setComposingRegion(a, b)` in UTF-16 units of the window `nativeImeText` returned.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeComposingRegion(_: *mut JNIEnv, _: jobject, h: jlong, a: jint, b: jint) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    let (a, b) = (a.max(0) as usize, b.max(0) as usize);
+    next(h.view.with_ime(|ime, core| ime.compose_region(core, a, b)).unwrap_or(Next::Idle))
+}
+
+/// `deleteSurroundingText` in UTF-16 units, or `UNHANDLED` without a window of text, for the
+/// view to send Backspace and Delete instead.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeDeleteSurrounding(_: *mut JNIEnv, _: jobject, h: jlong, before: jint, after: jint) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return UNHANDLED };
+    let (before, after) = (before.max(0) as usize, after.max(0) as usize);
+    h.view.with_ime(|ime, core| ime.delete_surrounding(core, before, after)).map_or(UNHANDLED, next)
+}
+
+/// The window of text around the focused field's selection, or null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeImeText(env: *mut JNIEnv, _: jobject, h: jlong) -> jstring {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(text) = (unsafe { handle(h) }).and_then(|h| h.view.ime_bridge().window().map(|w| w.text().encode_utf16().collect::<Vec<u16>>())) else { return null_mut() };
+    // SAFETY: `text` is a live UTF-16 buffer of the given length.
+    unsafe { call!(env, NewString(text.as_ptr(), text.len() as i32)) }
+}
+
+/// The selection in that window as `start << 32 | end`, in UTF-16 units; -1 without one.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeImeSelection(_: *mut JNIEnv, _: jobject, h: jlong) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some((a, b)) = (unsafe { handle(h) }).and_then(|h| h.view.ime_bridge().window().map(|w| w.selection_units())) else { return -1 };
+    ((a as jlong) << 32) | (b as jlong & 0xffff_ffff)
+}
+
+/// `commitContent`: a keyboard image the view read and encoded as PNG.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativePastePng(env: *mut JNIEnv, _: jobject, h: jlong, png: jbyteArray) -> jlong {
+    // SAFETY: `h` comes from `nativeNew`.
+    let Some(h) = (unsafe { handle(h) }) else { return -1 };
+    // SAFETY: `png` is a live byte array; the copy writes exactly its length.
+    let bytes = unsafe {
+        let n = call!(env, GetArrayLength(png)).max(0) as usize;
+        let mut bytes = vec![0u8; n];
+        call!(env, GetByteArrayRegion(png, 0, n as i32, bytes.as_mut_ptr().cast()));
+        bytes
+    };
+    next(h.view.with_ime(|_, core| ImeBridge::paste_png(core, bytes)).unwrap_or(Next::Idle))
 }
 
 /// What the keyboard should do now (`Keyboard` as an int), once.

@@ -2,7 +2,10 @@ package ly.anoma.rune
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -15,6 +18,9 @@ import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 
@@ -88,6 +94,12 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             EditorInfo.IME_ACTION_NONE
+        val selection = nativeImeSelection(handle)
+        if (selection >= 0) {
+            outAttrs.initialSelStart = (selection ushr 32).toInt()
+            outAttrs.initialSelEnd = selection.toInt()
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) outAttrs.contentMimeTypes = IMAGE_TYPES
         return RuneInput()
     }
 
@@ -122,10 +134,75 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         }
 
         override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-            repeat(beforeLength) { key(KeyEvent.KEYCODE_DEL) }
-            repeat(afterLength) { key(KeyEvent.KEYCODE_FORWARD_DEL) }
+            val next = nativeDeleteSurrounding(handle, beforeLength, afterLength)
+            if (next == UNHANDLED) {
+                // No text to count in (mid-composition, a secret field): keys instead.
+                repeat(beforeLength) { key(KeyEvent.KEYCODE_DEL) }
+                repeat(afterLength) { key(KeyEvent.KEYCODE_FORWARD_DEL) }
+            } else {
+                schedule(next)
+            }
             return true
         }
+
+        override fun setComposingRegion(start: Int, end: Int): Boolean {
+            schedule(nativeComposingRegion(handle, start, end))
+            return true
+        }
+
+        override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? {
+            val text = nativeImeText(handle) ?: return null
+            val start = selectionStart()
+            return text.substring((start - n).coerceAtLeast(0), start)
+        }
+
+        override fun getTextAfterCursor(n: Int, flags: Int): CharSequence? {
+            val text = nativeImeText(handle) ?: return null
+            val end = selectionEnd()
+            return text.substring(end, (end + n).coerceAtMost(text.length))
+        }
+
+        override fun getSelectedText(flags: Int): CharSequence? {
+            val text = nativeImeText(handle) ?: return null
+            val (start, end) = selectionStart() to selectionEnd()
+            return if (start == end) null else text.substring(start, end)
+        }
+
+        override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+            val text = nativeImeText(handle) ?: return null
+            return ExtractedText().apply {
+                this.text = text
+                startOffset = 0
+                partialStartOffset = -1
+                partialEndOffset = -1
+                selectionStart = selectionStart()
+                selectionEnd = selectionEnd()
+            }
+        }
+
+        /** A keyboard's image (a sticker, a GIF's first frame): decoded off the UI thread, pasted as PNG. */
+        override fun commitContent(content: InputContentInfo, flags: Int, opts: Bundle?): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return false
+            if (flags and InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION != 0) {
+                try { content.requestPermission() } catch (_: Exception) { return false }
+            }
+            Thread {
+                val png = try {
+                    context.contentResolver.openInputStream(content.contentUri)?.use { BitmapFactory.decodeStream(it) }?.let { bitmap ->
+                        java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                    }
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    content.releasePermission()
+                }
+                if (png != null) post { if (handle != 0L) schedule(nativePastePng(handle, png)) }
+            }.start()
+            return true
+        }
+
+        private fun selectionStart() = nativeImeSelection(handle).let { if (it < 0) 0 else (it ushr 32).toInt() }
+        private fun selectionEnd() = nativeImeSelection(handle).let { if (it < 0) 0 else it.toInt() }
 
         override fun sendKeyEvent(event: KeyEvent): Boolean {
             key(event)
@@ -148,6 +225,9 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
                 keyboard.restartInput(this)
             }
             KEYBOARD_RESTART -> keyboard.restartInput(this)
+            KEYBOARD_SELECT -> nativeImeSelection(handle).let {
+                if (it >= 0) keyboard.updateSelection(this, (it ushr 32).toInt(), it.toInt(), -1, -1)
+            }
         }
     }
 
@@ -233,6 +313,11 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeCommit(handle: Long, text: String): Long
     private external fun nativeCompose(handle: Long, text: String): Long
     private external fun nativeFinishCompose(handle: Long): Long
+    private external fun nativeComposingRegion(handle: Long, start: Int, end: Int): Long
+    private external fun nativeDeleteSurrounding(handle: Long, before: Int, after: Int): Long
+    private external fun nativeImeText(handle: Long): String?
+    private external fun nativeImeSelection(handle: Long): Long
+    private external fun nativePastePng(handle: Long, png: ByteArray): Long
     private external fun nativeTakeKeyboard(handle: Long): Int
     private external fun nativeWantsText(handle: Long): Boolean
     private external fun nativeDark(handle: Long, dark: Boolean): Long
@@ -244,5 +329,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_SHOW = 1
         const val KEYBOARD_HIDE = 2
         const val KEYBOARD_RESTART = 3
+        const val KEYBOARD_SELECT = 4
+        val IMAGE_TYPES = arrayOf("image/png", "image/gif", "image/jpeg", "image/webp")
     }
 }
