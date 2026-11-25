@@ -71,8 +71,11 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   around the caret by range. A keyboard's image (`commitContent`: a sticker, a GIF's first frame) is
   decoded off the UI thread and pasted as PNG. A hardware keyboard's keys arrive as Rune keys, Ctrl
   shortcuts included.
+- **Fonts**: a character the app's fonts lack draws with the system's font for its script, from
+  `/system/etc/fonts.xml` and `/system/fonts` (CJK, Arabic, Indic scripts, colour emoji, symbols),
+  loaded the first time a text needs it.
 - **Back**: when something has focus, back sends Escape (closing what's open or leaving a
   field); otherwise the activity goes back.
 
 Not yet: accessibility (TalkBack), the clipboard,
-links, file pickers and system fonts.
+links and file pickers.
