@@ -219,7 +219,7 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
         hoverLink: null, hoverLinkLeave: null, hoverClientX: NaN, hoverClientY: NaN,
         forwarding: false, pendingLinkDrag: null, suppressLinkClickUntil: 0,
         lastScrollAt: 0, staticTimer: 0, scrollEls: new Map(), band, mediaKeys: false,
-        visualViewport: null, keyboardShiftY: 0,
+        visualViewport: null, keyboardShiftY: 0, pendingFieldBlur: false,
         pointerLocked: false, pointerLockPending: false, pointerLockSeq: 0, pointerLockHasPromise: false, pointerLockCalling: false, pointerLockSyncError: false, pointerLockUnadjustedFailed: false };
     // `after` runs once the event has reached Rust (or was dropped), even when it is deferred.
     const send = (event, after) => {
@@ -269,8 +269,21 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
         recordTouchTimestamp(false, event);
     }, { capture: true, passive: true });
     listen(window, 'pointermove', event => recordTouchTimestamp(true, event), { capture: true, passive: true });
+    const checkFieldBlur = () => {
+        if (h.disposed || h.syncing || !h.pendingFieldBlur) return;
+        if (h.activeTouchId !== null) return;
+        h.pendingFieldBlur = false;
+        if (!h.key || typeof h.menu?.done === 'function') return;
+        if (document.activeElement === h.field) return;
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+        if (document.hidden) return;
+        send({ kind: 'field_blur', key: h.key });
+    };
     const clearActiveTouch = event => {
-        if (event.pointerType === 'touch' && event.pointerId === h.activeTouchId) h.activeTouchId = null;
+        if (event.pointerType === 'touch' && event.pointerId === h.activeTouchId) {
+            h.activeTouchId = null;
+            if (h.pendingFieldBlur) queueMicrotask(checkFieldBlur);
+        }
         recordTouchTimestamp(false, event);
     };
     listen(window, 'pointerup', clearActiveTouch, { capture: true, passive: true });
@@ -283,8 +296,8 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
     listen(window, 'keyup', event => {
         if (event.target === canvas && MOD_KEYS.includes(event.key)) syncMods(event);
     }, { passive: true });
-    listen(window, 'blur', () => { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; disarmLink(h); });
-    listen(document, 'visibilitychange', () => { if (document.hidden) { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; disarmLink(h); } });
+    listen(window, 'blur', () => { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; disarmLink(h); });
+    listen(document, 'visibilitychange', () => { if (document.hidden) { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; disarmLink(h); } });
     listen(document, 'pointerlockchange', () => {
         if (h.disposed) return;
         const locked = document.pointerLockElement === canvas;
@@ -424,7 +437,12 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
             key(event.key, event);
         });
         listen(field, 'keyup', event => { h.shift = event.shiftKey; });
-        listen(field, 'blur', () => { h.shift = false; });
+        listen(field, 'blur', () => {
+            h.shift = false;
+            if (h.disposed || h.syncing || !h.key || field !== h.field) return;
+            h.pendingFieldBlur = true;
+            queueMicrotask(checkFieldBlur);
+        });
     }
     listen(textarea, 'select', () => {
         if (h.syncing || h.composing || document.activeElement !== textarea) return;
@@ -730,11 +748,16 @@ function reselect(h) {
 // Sets `inert = false` and `inputMode = 'text'` BEFORE calling `focus()` so iOS Safari evaluates
 // `shouldShowAutomaticKeyboardUI` with an editable `inputMode` at the moment of focus (while
 // keeping `opacity: 0` so WebKit suppresses native selection UI and zoom-to-focus per r238146).
-function focusInput(h) {
+// When `force` is true (called from `activate()` inside a user gesture), `focus()` runs even when
+// `field` is already `document.activeElement` so WebKit's `Element::focus` invokes
+// `elementDidRefocus` (r188405/r290646) to re-present the keyboard if dismissed while staying a
+// zero-flicker no-op when the keyboard is already showing (r242833).
+function focusInput(h, force = false) {
     const field = h.field;
+    h.pendingFieldBlur = false;
     field.inert = false;
     field.inputMode = 'text';
-    if (document.activeElement !== field) field.focus({ preventScroll: true });
+    if (force || document.activeElement !== field) field.focus({ preventScroll: true });
     reselect(h);
 }
 
@@ -749,6 +772,7 @@ export function sync(h, key, text, base, anchor, focus, secure) {
     h.password.value = '';
     h.field = secure ? h.password : h.textarea;
     if (!key) {
+        h.pendingFieldBlur = false;
         h.selection = null;
         h.textarea.value = '';
         if (editing) h.canvas.focus({ preventScroll: true });
@@ -767,7 +791,7 @@ export function sync(h, key, text, base, anchor, focus, secure) {
             h.selection = [start, end, direction];
         }
         if (editing && active !== h.field) activate(h);
-        else if (active === h.canvas) focusInput(h);
+        else if (active === h.canvas && !h.pendingFieldBlur) focusInput(h);
         else {
             h.field.inputMode = 'text';
             reselect(h);
@@ -2257,7 +2281,7 @@ export function activate(h) {
     // A page's canvas is `tabindex="-1"`: focusing it on a tap would only drop the reader's text
     // selection or a link's focus. An input that took the keyboard still gets it.
     if (h.page && !h.key) return;
-    if (h.key) focusInput(h);
+    if (h.key) focusInput(h, true);
     else if (document.activeElement !== h.canvas) h.canvas.focus({ preventScroll: true });
 }
 

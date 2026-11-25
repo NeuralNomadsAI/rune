@@ -1,0 +1,1 @@
+- Web: forwarded external hidden-input DOM blurs (such as iOS keyboard dismissal or focus moving to another page element) to the runtime so stale carets clear and `on_blur` handlers run, and called `focus()` unconditionally inside `activate()` so re-tapping an already-focused field re-presents the iOS keyboard via WebKit's `elementDidRefocus`.
