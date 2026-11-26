@@ -84,6 +84,8 @@ pub(crate) struct HostState {
     /// the word under it, as that platform's text does, and a finger changes the selection and
     /// the focus when it lifts as a tap, not when it lands.
     pub(crate) text_menus: bool,
+    /// A finger tapped a text field on such a host (`RuntimeCore::take_field_tap`).
+    pub(crate) field_tap: bool,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
     pub(in crate::runtime) popups: popup_dispatch::Popups,
     /// Pending text-field menu delivered to `App::on_field_menu`, awaiting `Tx::resolve_field_menu`.
@@ -165,6 +167,7 @@ impl HostState {
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
             text_menus: false,
+            field_tap: false,
             popups: Default::default(),
             field_menu_fallback: None,
             field_menu_seq: 0,

@@ -288,6 +288,10 @@ impl View {
         self.ime.take_keyboard()
     }
 
+    pub(super) fn take_keyboard_reveal(&mut self) -> bool {
+        self.ime.take_reveal()
+    }
+
     /// Whether a focused field takes text, so `RuneView` offers an `InputConnection`.
     pub(super) fn wants_text(&self) -> bool {
         self.ime.wants_text()

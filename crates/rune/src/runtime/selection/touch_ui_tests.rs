@@ -326,3 +326,27 @@ fn a_scroll_that_starts_on_a_field_does_not_focus_it() {
     assert!(!rt.state.edit.focused, "nor does the scroll");
     assert!(rt.find("f").unwrap().1 < fy - 30.0, "the page scrolled");
 }
+
+#[test]
+fn a_tap_on_a_field_asks_the_host_for_its_keyboard_again() {
+    let mut rt = rig();
+    let (fx, fy) = rt.find("f").unwrap();
+    assert!(!rt.core_mut().take_field_tap());
+    tap(&mut rt, fx, fy);
+    assert!(rt.core_mut().take_field_tap(), "the tap that focuses it");
+    assert!(!rt.core_mut().take_field_tap(), "told once");
+    // The user put the keyboard away; the field kept its focus, and is tapped again.
+    tap(&mut rt, fx, fy);
+    assert!(rt.state.edit.focused && rt.core_mut().take_field_tap(), "a tap on the focused field");
+    // A scroll over the field, or a tap beside it, asks for nothing.
+    rt.touch(1, TouchPhase::Started, fx, fy, 0.0);
+    for (i, dy) in [10.0, 30.0, 50.0].into_iter().enumerate() {
+        rt.touch(1, TouchPhase::Moved, fx, fy - dy, 0.02 * (i + 1) as f64);
+        rt.frame(1.0 / 60.0);
+    }
+    rt.touch(1, TouchPhase::Ended, fx, fy - 50.0, 0.1);
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.core_mut().take_field_tap(), "a scroll");
+    tap(&mut rt, 390.0, 290.0);
+    assert!(!rt.core_mut().take_field_tap(), "a tap elsewhere");
+}

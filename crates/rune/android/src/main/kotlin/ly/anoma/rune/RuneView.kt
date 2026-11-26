@@ -285,7 +285,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
 
     /** Shows, hides or restarts the keyboard as Rune's focused field asks, after a frame. */
     private fun applyKeyboard() {
-        when (nativeTakeKeyboard(handle)) {
+        val ask = nativeTakeKeyboard(handle)
+        when (ask and KEYBOARD_REVEAL.inv()) {
             KEYBOARD_SHOW -> {
                 requestFocus()
                 keyboard.restartInput(this)
@@ -300,6 +301,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
                 if (it >= 0) keyboard.updateSelection(this, (it ushr 32).toInt(), it.toInt(), -1, -1)
             }
         }
+        // A tap on a field that kept its focus while the keyboard was put away brings it back.
+        if (ask and KEYBOARD_REVEAL != 0 && onCheckIsTextEditor()) keyboard.showSoftInput(this, 0)
     }
 
     fun resume() {
@@ -439,6 +442,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_HIDE = 2
         const val KEYBOARD_RESTART = 3
         const val KEYBOARD_SELECT = 4
+        const val KEYBOARD_REVEAL = 8
         const val EDITOR_SECURE = 1
         const val EDITOR_ONE_LINE = 2
         const val EDITOR_EMAIL = 1

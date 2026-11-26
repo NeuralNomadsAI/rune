@@ -41,6 +41,9 @@ pub(in crate::platform::android) struct ImeBridge {
     window: Option<ImeWindow>,
     /// What the keyboard was last told of the focused field.
     editor: Option<Editor>,
+    /// A finger tapped a field that takes text: the keyboard comes back if the user had put
+    /// it away, the field having kept its focus.
+    reveal: bool,
 }
 
 impl ImeBridge {
@@ -64,6 +67,7 @@ impl ImeBridge {
         };
         self.keyboard = self.keyboard.then(next);
         self.editor = editor;
+        self.reveal |= core.take_field_tap() && self.sync.is_enabled();
         if !self.sync.is_enabled() {
             self.window = None;
         } else if window.is_some() {
@@ -73,6 +77,11 @@ impl ImeBridge {
 
     pub(in crate::platform::android) fn take_keyboard(&mut self) -> Keyboard {
         std::mem::take(&mut self.keyboard)
+    }
+
+    /// Whether to show the keyboard as it is (`InputMethodManager.showSoftInput`), once.
+    pub(in crate::platform::android) fn take_reveal(&mut self) -> bool {
+        std::mem::take(&mut self.reveal)
     }
 
     pub(in crate::platform::android) fn wants_text(&self) -> bool {

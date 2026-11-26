@@ -1,0 +1,1 @@
+- Android: a tap on a focused field brings the keyboard back. Back hides the keyboard and leaves the field its focus, after which a tap on that field changed nothing, so the keyboard stayed away until another field took focus.
