@@ -7,11 +7,14 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
+pub(super) mod ime;
+pub(super) mod selection;
+
 use super::lifecycle::{self, Effect, Event, Insets};
 use crate::app::App;
 use crate::embed::{EmbedFrame, LayerHost};
-use super::host_ime::{ImeBridge, Keyboard};
-use super::host_selection::{SelectionBridge, Toolbar};
+use ime::{ImeBridge, Keyboard};
+use selection::{SelectionBridge, Toolbar};
 use crate::popup_menu::Show;
 use crate::runtime::touch_ui::{Ends, Handle};
 use crate::runtime::{RuntimeCore, Waker};

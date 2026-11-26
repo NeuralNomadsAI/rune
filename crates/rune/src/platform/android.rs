@@ -17,10 +17,6 @@ macro_rules! call {
 
 #[cfg(target_os = "android")]
 mod host;
-#[cfg(target_os = "android")]
-mod host_ime;
-#[cfg(target_os = "android")]
-mod host_selection;
 pub(crate) mod ime_window;
 #[cfg(test)]
 mod ime_window_tests;
