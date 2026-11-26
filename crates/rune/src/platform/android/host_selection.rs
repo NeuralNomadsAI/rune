@@ -25,7 +25,9 @@ pub(super) struct SelectionBridge {
 }
 
 impl SelectionBridge {
-    fn run(&mut self, host: &mut dyn Host, event: Event) {
+    /// True when the runtime was asked for a menu, which its next frame brings.
+    fn run(&mut self, host: &mut dyn Host, event: Event) -> bool {
+        let mut asked = false;
         for effect in selection::step(&mut self.state, event) {
             match effect {
                 Effect::Handles(ends) => self.handles = Some(ends),
@@ -33,10 +35,10 @@ impl SelectionBridge {
                     host.resolve_menu(None);
                     self.toolbar = Some(Toolbar::Shut);
                 }
-                // The frame that follows every call from the view brings it.
-                Effect::Ask => _ = host.open_text_menu(),
+                Effect::Ask => asked |= host.open_text_menu(),
             }
         }
+        asked
     }
 
     /// After a frame: the selection's ends as it left them, and the text menu it asked for.
@@ -44,8 +46,8 @@ impl SelectionBridge {
     pub(super) fn after_frame(&mut self, host: &mut dyn Host) -> bool {
         let show = host.take_text_menu();
         let ends = host.selection_ends();
-        self.run(host, Event::Frame { ends, menu: show.is_some() });
-        show.is_some_and(|show| self.open(host, show))
+        let asked = self.run(host, Event::Frame { ends, menu: show.is_some() });
+        show.is_some_and(|show| self.open(host, show)) || asked
     }
 
     /// The menu's enabled items become the toolbar's. One with none is answered at once, and
@@ -71,15 +73,15 @@ impl SelectionBridge {
         self.run(host, Event::Lift { panned });
     }
 
-    /// A handle's finger: `phase` 0 down, 1 moved, 2 up, 3 up with no toolbar to bring, at
-    /// (x, y) in points.
-    pub(super) fn handle(&mut self, host: &mut dyn Host, handle: Handle, phase: i32, x: f32, y: f32) {
+    /// A handle's finger: `phase` 0 down, 1 moved, 2 up, 3 up with no toolbar to bring. Its end
+    /// goes to (x, y) and the finger is at height `finger_y`, in points.
+    pub(super) fn handle(&mut self, host: &mut dyn Host, handle: Handle, phase: i32, x: f32, y: f32, finger_y: f32) {
         match phase {
             0 if host.grab_handle(handle) => {
                 self.run(host, Event::Grab);
-                host.drag_handle(x, y);
+                host.drag_handle(x, y, finger_y);
             }
-            1 => host.drag_handle(x, y),
+            1 => host.drag_handle(x, y, finger_y),
             2 => {
                 host.release_handle();
                 self.run(host, Event::Release);

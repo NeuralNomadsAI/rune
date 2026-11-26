@@ -75,3 +75,26 @@ fn a_scroll_brings_the_toolbar_back_and_a_tap_does_not() {
     assert_eq!(run(&mut s, Event::Touch), []);
     assert_eq!(run(&mut s, Event::Lift { panned: true }), []);
 }
+
+#[test]
+fn a_selection_a_tap_made_gets_its_toolbar() {
+    // A second tap selects its word.
+    let mut s = State::default();
+    assert_eq!(run(&mut s, Event::Touch), []);
+    assert_eq!(run(&mut s, Event::Lift { panned: false }), []);
+    assert_eq!(frame(&mut s, range(100.0), false), [Effect::Handles(range(100.0)), Effect::Ask]);
+    assert_eq!(frame(&mut s, range(100.0), true), []);
+    // A tap with that selection showing asks for nothing: on a control that keeps it, or the
+    // lift of the long press that made it.
+    assert_eq!(run(&mut s, Event::Touch), [Effect::Shut]);
+    assert_eq!(run(&mut s, Event::Lift { panned: false }), []);
+    assert_eq!(frame(&mut s, range(100.0), false), []);
+    let mut s = State::default();
+    run(&mut s, Event::Touch);
+    assert_eq!(frame(&mut s, range(100.0), true), [Effect::Handles(range(100.0))]);
+    run(&mut s, Event::Lift { panned: false });
+    assert_eq!(frame(&mut s, range(100.0), false), []);
+    // A frame that isn't a tap's (a selection the app made) asks for none either.
+    let mut s = State::default();
+    assert_eq!(frame(&mut s, range(100.0), false), [Effect::Handles(range(100.0))]);
+}

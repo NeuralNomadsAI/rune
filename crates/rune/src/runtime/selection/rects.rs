@@ -139,21 +139,33 @@ impl RuntimeCore {
         out
     }
 
-    /// The first and the last line box of what is selected, each with the node whose text it
-    /// is: the focused field's selection, else the selectable text's.
+    /// Where a caret would stand at each end of what is selected, `[x, y, w, h]` with the node
+    /// whose text it is: the focused field's selection, else the selectable text's. A caret, not
+    /// a line box's edge, so the start of right-to-left text is on its right.
     #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
-    pub(in crate::runtime) fn selection_end_boxes(&self) -> Option<[(usize, [f32; 4]); 2]> {
+    pub(in crate::runtime) fn selection_end_carets(&self) -> Option<[(usize, [f32; 4]); 2]> {
+        use parley::Affinity::{Downstream, Upstream};
         let nodes = &self.tree.nodes;
         if let Some(i) = self.focused_index().filter(|&i| nodes[i].input.is_some()) {
-            let boxes = self.field_selection_boxes_of(nodes, i);
-            return Some([(i, *boxes.first()?), (i, *boxes.last()?)]);
+            let n = &nodes[i];
+            let (inp, spec, laid) = (n.input.as_ref()?, n.text.as_ref()?, n.text_layout.as_ref()?);
+            if n.is_secure() || inp.edit.preedit().is_some() { return None; }
+            let (a, b) = inp.edit.range();
+            let (da, db) = inp.edit.display_selection_range(a, b);
+            if da >= db { return None; }
+            let [ox, oy] = self.field_text_origin(nodes, i, inp, spec, laid);
+            let s = self.env.scale;
+            // The end of a wrapped line, not the start of the next.
+            let at = |byte: usize, affinity| {
+                let bb = laid.view().caret(byte.min(spec.content.len()), affinity, 1.5 * s);
+                let h = if bb.y1 > bb.y0 { (bb.y1 - bb.y0) as f32 / s } else { spec.style.line_px() };
+                (i, [ox + bb.x0 as f32 / s, oy + bb.y0 as f32 / s, 1.5, h])
+            };
+            return Some([at(da, Downstream), at(db, Upstream)]);
         }
         let ranges = self.selection_ranges();
-        let (&(i, a, b), &(j, c, d)) = (ranges.first()?, ranges.last()?);
-        let (mut first, mut last) = (Vec::new(), Vec::new());
-        self.text_boxes(nodes, i, a, b, &mut first);
-        self.text_boxes(nodes, j, c, d, &mut last);
-        Some([(i, *first.first()?), (j, *last.last()?)])
+        let (&(i, a, _), &(j, _, b)) = (ranges.first()?, ranges.last()?);
+        Some([(i, self.caret_browse_node_rect(nodes, i, a, Downstream)?), (j, self.caret_browse_node_rect(nodes, j, b, Upstream)?)])
     }
 
     /// The selection's ranges by the path of each selected text. A measure reads them before it

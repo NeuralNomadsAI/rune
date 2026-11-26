@@ -213,6 +213,9 @@ pub(in crate::runtime) struct Touch {
     hold_command: Option<TouchHoldCommand>,
     /// The finger down has panned a viewport, so its lift is no tap.
     panned: bool,
+    /// The finger's press left the text selection as it was (`press_down` on a touch host): its
+    /// lift as a tap does what the press would have.
+    pub(in crate::runtime) select_on_lift: bool,
     /// [`Drag::data`] kept across an `El::on_edge_drag` gesture's phases.
     pub(in crate::runtime) edge_data: f32,
     /// Active `El::on_edge_drag` target and fallback handler, kept in lockstep with `Mode::Edge`.
@@ -405,7 +408,7 @@ impl RuntimeCore {
                 TouchEffect::PointerUp((x, y)) => {
                     // A touch host's finger changes the text selection when it lifts as a tap,
                     // not when it lands: it may be starting a scroll under selected text.
-                    if self.host.text_menus && !self.pointer.touch.panned {
+                    if std::mem::take(&mut self.pointer.touch.select_on_lift) && !self.pointer.touch.panned {
                         self.press_selection(self.primary_target(x, y), x, y);
                         self.select_step(selectable::phase::Event::Release);
                     }
@@ -463,6 +466,7 @@ impl RuntimeCore {
         let has_edge = edge_drag::any_candidate(edge);
         let scroll = self.touch_scroll_start(x, y);
         self.pointer.touch.panned = false;
+        self.pointer.touch.select_on_lift = false;
         self.pointer_move(app, x, y);
         self.press_down(app, x, y, true);
         let now = self.now_clock();

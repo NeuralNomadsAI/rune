@@ -29,9 +29,9 @@ internal class RuneSelection(private val view: View, private val events: Events)
     interface Events {
         /**
          * A handle's finger: [phase] 0 down, 1 moved, 2 up, 3 up with no toolbar to bring; where its
-         * end goes, in the view's pixels.
+         * end goes and the finger's own height, in the view's pixels.
          */
-        fun handle(which: Int, phase: Int, x: Float, y: Float)
+        fun handle(which: Int, phase: Int, x: Float, y: Float, fingerY: Float)
 
         /** The toolbar closed by itself, with the item at [index] picked or none (-1). */
         fun picked(index: Int)
@@ -116,6 +116,8 @@ internal class RuneSelection(private val view: View, private val events: Events)
 
             override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) = outRect.set(content)
         }, ActionMode.TYPE_FLOATING)
+        // Refused (a view without a window): the menu is answered, not left open.
+        if (toolbar == null) view.post { events.picked(-1) }
     }
 
     /** The view lost its surface or went to the background: nothing stays over it until [show]. */
@@ -200,18 +202,18 @@ internal class RuneSelection(private val view: View, private val events: Events)
                     downY = event.rawY
                     dx = event.rawX - at[0] - x
                     dy = event.rawY - at[1] - middle
-                    events.handle(which, 0, x, middle)
+                    events.handle(which, 0, x, middle, event.rawY - at[1])
                 }
                 MotionEvent.ACTION_MOVE -> {
                     moved = moved || hypot(event.rawX - downX, event.rawY - downY) > slop
-                    events.handle(which, 1, event.rawX - at[0] - dx, event.rawY - at[1] - dy)
+                    events.handle(which, 1, event.rawX - at[0] - dx, event.rawY - at[1] - dy, event.rawY - at[1])
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     held = false
                     magnifier.also { magnifier = null }?.dismiss()
                     if (which == CARET) tapped()
                     // A caret's handle shows its toolbar when tapped, not after a drag.
-                    events.handle(which, if (which == CARET && moved) 3 else 2, 0f, 0f)
+                    events.handle(which, if (which == CARET && moved) 3 else 2, 0f, 0f, 0f)
                 }
             }
             return true

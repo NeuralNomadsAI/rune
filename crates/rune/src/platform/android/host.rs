@@ -40,7 +40,7 @@ pub(super) trait Host {
     fn open_text_menu(&mut self) -> bool;
     fn resolve_menu(&mut self, picked: Option<&str>);
     fn grab_handle(&mut self, handle: Handle) -> bool;
-    fn drag_handle(&mut self, x: f32, y: f32);
+    fn drag_handle(&mut self, x: f32, y: f32, finger_y: f32);
     fn release_handle(&mut self);
 }
 
@@ -68,7 +68,7 @@ impl<S: 'static> Host for LayerHost<S> {
     fn open_text_menu(&mut self) -> bool { self.runtime_mut().open_text_menu() }
     fn resolve_menu(&mut self, picked: Option<&str>) { self.runtime_mut().resolve_popup(picked).ok(); }
     fn grab_handle(&mut self, handle: Handle) -> bool { self.runtime_mut().grab_handle(handle) }
-    fn drag_handle(&mut self, x: f32, y: f32) { self.runtime_mut().drag_handle(x, y); }
+    fn drag_handle(&mut self, x: f32, y: f32, finger_y: f32) { self.runtime_mut().drag_handle(x, y, finger_y); }
     fn release_handle(&mut self) { self.runtime_mut().release_handle(); }
 }
 
@@ -236,11 +236,11 @@ impl View {
         self.step(Event::Frame, None)
     }
 
-    /// A selection handle's finger and its `phase` (`SelectionBridge::handle`), at (x, y) in device
-    /// pixels.
-    pub(super) fn handle(&mut self, handle: Handle, phase: i32, x: f32, y: f32) -> Next {
+    /// A selection handle's finger and its `phase` (`SelectionBridge::handle`): its end goes to
+    /// (x, y) and the finger is at height `finger_y`, in device pixels.
+    pub(super) fn handle(&mut self, handle: Handle, phase: i32, x: f32, y: f32, finger_y: f32) -> Next {
         let Some(host) = &mut self.host else { return Next::Idle };
-        self.selection.handle(host.as_mut(), handle, phase, x / self.density, y / self.density);
+        self.selection.handle(host.as_mut(), handle, phase, x / self.density, y / self.density, finger_y / self.density);
         self.step(Event::Frame, None)
     }
 

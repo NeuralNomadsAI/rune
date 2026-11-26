@@ -104,15 +104,15 @@ fn the_end_handle_extends_the_selection_and_the_start_handle_pulls_it_back() {
     let (_, (ex, ey)) = range(&rt);
 
     assert!(rt.grab_handle(Handle::End));
-    rt.drag_handle(ex, ey);
+    rt.drag_handle(ex, ey, ey);
     assert_eq!(selected(&rt), (a, b), "a grab alone changes nothing");
-    rt.drag_handle(390.0, ey);
+    rt.drag_handle(390.0, ey, ey);
     rt.release_handle();
     rt.frame(0.0);
     assert_eq!(selected(&rt), (a, TEXT.len()));
 
     assert!(rt.grab_handle(Handle::Start));
-    rt.drag_handle(0.0, ey);
+    rt.drag_handle(0.0, ey, ey);
     rt.release_handle();
     rt.frame(0.0);
     assert_eq!(selected(&rt), (0, TEXT.len()));
@@ -126,7 +126,7 @@ fn a_field_handle_moves_its_end_and_the_caret_handle_moves_the_caret() {
     rt.take_text_menu();
     rt.resolve_popup(None).unwrap();
     assert!(rt.grab_handle(Handle::End));
-    rt.drag_handle(cx + 140.0, y);
+    rt.drag_handle(cx + 140.0, y, y);
     rt.release_handle();
     rt.frame(0.0);
     assert_eq!(rt.state.edit.range(), (0, FIELD.len()));
@@ -136,7 +136,7 @@ fn a_field_handle_moves_its_end_and_the_caret_handle_moves_the_caret() {
     let Some(Ends::Caret(at)) = rt.selection_ends() else { panic!("no caret: {:?}", rt.selection_ends()) };
     assert!(at.shown && at.bottom > at.top);
     assert!(rt.grab_handle(Handle::Caret));
-    rt.drag_handle(cx + 140.0, y);
+    rt.drag_handle(cx + 140.0, y, y);
     rt.release_handle();
     rt.frame(0.0);
     assert_eq!(rt.state.edit.range(), (FIELD.len(), FIELD.len()));
@@ -224,4 +224,45 @@ fn a_scroll_under_selected_text_keeps_it_and_a_tap_elsewhere_clears_it() {
     rt.frame(0.1);
     assert_eq!(rt.text_selection(), None);
     assert_eq!(rt.selection_ends(), None);
+}
+
+#[test]
+fn a_handle_stops_short_of_the_other_end() {
+    let mut rt = rig();
+    let y = rt.find("t").unwrap().1;
+    long_press(&mut rt, 60.0, y);
+    rt.take_text_menu();
+    rt.resolve_popup(None).unwrap();
+    let (a, b) = selected(&rt);
+    let (_, (ex, ey)) = range(&rt);
+    assert!(rt.grab_handle(Handle::End));
+    rt.drag_handle(ex, ey, ey);
+    rt.drag_handle(0.0, ey, ey);
+    rt.release_handle();
+    assert_eq!(selected(&rt), (a, b), "dragged past the start, the end stays where it last held a selection");
+
+    // A field's too.
+    let (cx, fy) = rt.find("f").unwrap();
+    long_press(&mut rt, cx - 150.0 + 14.0, fy);
+    rt.take_text_menu();
+    rt.resolve_popup(None).unwrap();
+    let before = rt.state.edit.range();
+    assert!(rt.grab_handle(Handle::Start));
+    rt.drag_handle(cx + 140.0, fy, fy);
+    rt.release_handle();
+    rt.frame(0.0);
+    assert_eq!(rt.state.edit.range(), before);
+}
+
+#[test]
+fn the_start_of_right_to_left_text_is_on_its_right() {
+    const ARABIC: &str = "\u{645}\u{631}\u{62d}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645}";
+    let view = |_: &(), _: &mut Cx<()>| col().size(400.0, 100.0).child(text(ARABIC).key("t").font(TextStyle::new(14.0, 400.0)).selectable(true));
+    let mut rt = Runtime::new((), view, (400.0, 100.0), Env::default());
+    rt.core_mut().host.text_menus = true;
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.select_all_text("t"));
+    rt.frame(0.0);
+    let Some(Ends::Range { start, end }) = rt.selection_ends() else { panic!("no range: {:?}", rt.selection_ends()) };
+    assert!(start.x > end.x, "start {} end {}", start.x, end.x);
 }

@@ -274,10 +274,28 @@ impl RuntimeCore {
         self.carry_edge_scroll(effects);
     }
 
+    /// A touch host's selection handle moved (`touch_ui.rs`): as [`Self::edge_scroll_moved`],
+    /// for the finger holding it.
+    pub(in crate::runtime) fn edge_scroll_handle_moved(&mut self) {
+        let edge = self.edge_now();
+        let now = self.now_clock();
+        let effects = self.edit.selectable.edge.step(Event::Moved { now, edge });
+        self.carry_edge_scroll(effects);
+    }
+
+    /// The edge what extends the selection is at now: the held pointer, or a held handle. A
+    /// handle's finger is below its end, so the finger reaches a bottom edge and the end a top.
+    fn edge_now(&self) -> Option<Edge> {
+        match self.text_grab() {
+            Some(grab) => self.edge_at(grab.finger_y).filter(|e| e.speed > 0.0).or_else(|| self.edge_at(grab.point.1).filter(|e| e.speed < 0.0)),
+            None => self.pointer.pos.and_then(|(_, y)| self.edge_at(y)),
+        }
+    }
+
     /// Takes the step due by this frame.
     pub(in crate::runtime) fn fire_edge_scroll(&mut self) {
         let Some(attempt) = self.edit.selectable.edge.attempt() else { return };
-        let edge = self.pointer.pos.and_then(|(_, y)| self.edge_at(y));
+        let edge = self.edge_now();
         let effects = self.edit.selectable.edge.step(Event::Due { attempt, now: self.clock, edge });
         self.carry_edge_scroll(effects);
     }
@@ -298,7 +316,7 @@ impl RuntimeCore {
     fn edge_scroll_extent(&mut self, app: &dyn ViewDriver) -> EdgeLaid {
         let State::AtEnd { scroll, max } = self.edit.selectable.edge.state else { return EdgeLaid::default() };
         if self.scroll.scrolls.get(&scroll).is_some_and(|st| st.max == max) { return EdgeLaid::default(); }
-        let edge = self.pointer.pos.and_then(|(_, y)| self.edge_at(y));
+        let edge = self.edge_now();
         self.edge_step_heard(app, Event::Extent { now: self.clock, edge })
     }
 
@@ -324,7 +342,9 @@ impl RuntimeCore {
         for effect in effects {
             match effect {
                 Effect::Scroll { scroll, by } => self.edge_scroll_by(scroll, by),
-                Effect::Extend => if let Some((x, y)) = self.pointer.pos {
+                Effect::Extend => if self.text_grab().is_some() {
+                    self.drag_text_handle();
+                } else if let Some((x, y)) = self.pointer.pos {
                     if self.edit.selectable.phase.dragging() {
                         self.selection_drag(x, y);
                     } else if self.edit.input_click.dragging_path().is_some() {
@@ -357,7 +377,7 @@ impl RuntimeCore {
     /// held press is extending: at or past its top or bottom (as drawn, inside its clips and the
     /// window), how fast that scrolls, and how far it still can.
     fn edge_at(&self, y: f32) -> Option<Edge> {
-        if !self.dragging_selection() || !self.pointer.pressing() { return None; }
+        if !self.dragging_selection() || !(self.pointer.pressing() || self.text_grab().is_some()) { return None; }
         let holder = self.drag_holder()?;
         let i = std::iter::successors(Some(holder), |&p| self.tree.nodes[p].parent)
             .find(|&p| self.tree.nodes[p].scroll.is_some() && self.tree.nodes[p].scroll_axes.has(false))?;
