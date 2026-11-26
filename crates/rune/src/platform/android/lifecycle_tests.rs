@@ -1,4 +1,4 @@
-use super::lifecycle::{Effect, Event, Insets, State, Visibility, safe_area, step};
+use super::lifecycle::{Effect, Event, Insets, State, Visibility, safe_area, step, visible_band};
 
 fn run(state: &mut State, events: &[Event]) -> Vec<Effect> {
     events.iter().flat_map(|&e| step(state, e)).collect()
@@ -81,4 +81,27 @@ fn the_keyboard_raises_the_bottom_inset_without_resizing() {
 fn safe_area_ignores_a_bad_density_and_negative_insets() {
     assert_eq!(safe_area(Insets { bars: [10.0, -4.0, 0.0, 0.0], ime: [0.0; 4] }, 0.0), [10.0, 0.0, 0.0, 0.0]);
     assert_eq!(safe_area(Insets { bars: [10.0, 0.0, 0.0, 0.0], ime: [0.0; 4] }, f32::NAN), [10.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn the_keyboard_leaves_a_band_of_the_window_in_sight() {
+    let bars = [96.0, 0.0, 48.0, 0.0];
+    let open = Insets { bars, ime: [0.0, 0.0, 900.0, 0.0] };
+    assert_eq!(visible_band(open, PORTRAIT, 3.0), Some((0.0, 500.0)));
+    // Closed, or no taller than the navigation bar it replaces: the whole window shows.
+    assert_eq!(visible_band(Insets { bars, ime: [0.0; 4] }, PORTRAIT, 3.0), None);
+    assert_eq!(visible_band(Insets { bars, ime: [0.0, 0.0, 48.0, 0.0] }, PORTRAIT, 3.0), None);
+    // A keyboard taller than the window, or a density the system never reports.
+    assert_eq!(visible_band(Insets { bars, ime: [0.0, 0.0, 5000.0, 0.0] }, PORTRAIT, 3.0), None);
+    assert_eq!(visible_band(open, PORTRAIT, 0.0), Some((0.0, 1500.0)));
+}
+
+#[test]
+fn the_window_size_is_known_while_there_is_a_window() {
+    let mut s = State::default();
+    assert_eq!(s.px(), None);
+    run(&mut s, &[Event::WindowCreated { px: PORTRAIT }, Event::WindowChanged { px: LANDSCAPE }]);
+    assert_eq!(s.px(), Some(LANDSCAPE));
+    run(&mut s, &[Event::WindowDestroyed]);
+    assert_eq!(s.px(), None);
 }
