@@ -78,11 +78,12 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   toolbar, even where the app has `App::on_field_menu`. A second tap's word gets them too; a long
   press in the blank beside or below a field's text places the caret there and offers Paste. A
   handle drags its end as far as the other, with the system's magnifier over the line (Android
-  9+); held at the top or bottom of selectable text's viewport, it scrolls it. A tap in a field
+  9+); held at the top or bottom of the viewport around selectable text or a field of several
+  lines, it scrolls it. A tap in a field
   puts a handle under its caret for four seconds: it drags the caret, and a tap on it shows the
   toolbar. A finger changes the selection when it lifts as a tap, so a scroll under selected text
   keeps it; its toolbar goes while the scroll lasts. A field with its own `on_secondary_press`
-  shows that on a long press instead. A field's handles don't scroll it, the handles keep their
+  shows that on a long press instead. A one-line field's handles don't scroll it sideways, the handles keep their
   left-to-right shapes in right-to-left text, and a selection reaching into rows a virtual list
   has unmounted keeps its ends.
 - **Text input**: when a field takes text, `RuneView` offers the input method an

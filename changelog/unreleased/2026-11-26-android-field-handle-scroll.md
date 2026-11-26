@@ -1,0 +1,1 @@
+- Android: a selection handle of a field of several lines, held at the top or bottom of the viewport around it, scrolls it and extends the selection, as selectable text's handles do. It stopped at the last line in view.

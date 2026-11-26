@@ -314,6 +314,7 @@ impl RuntimeCore {
         self.frame.drain_due_wakes(due);
         self.fire_hover_delays();
         self.fire_press_repeat();
+        self.extend_field_handle(app);
         self.fire_edge_scroll();
         self.fire_autoscroll();
         self.fire_touch_hold(app);

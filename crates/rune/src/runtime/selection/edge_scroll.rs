@@ -252,7 +252,7 @@ impl RuntimeCore {
     /// Whether a held press is actively extending a selection, in `El::selectable` text or a
     /// `text_input`.
     fn dragging_selection(&self) -> bool {
-        self.edit.selectable.phase.dragging() || self.edit.input_click.dragging_path().is_some()
+        self.edit.selectable.phase.dragging() || self.edit.input_click.dragging_path().is_some() || self.field_grab().is_some()
     }
 
     /// The node holding the active selection drag: a selectable text or a multiline `text_input`.
@@ -260,6 +260,7 @@ impl RuntimeCore {
         if self.edit.selectable.phase.dragging() {
             return self.selection_holder();
         }
+        if let Some(field) = self.field_grab() { return Some(field); }
         let path = self.edit.input_click.dragging_path()?;
         self.live(path).filter(|&i| self.tree.nodes[i].input.as_ref().is_some_and(|inp| !inp.single_line))
     }
@@ -286,8 +287,8 @@ impl RuntimeCore {
     /// The edge what extends the selection is at now: the held pointer, or a held handle. A
     /// handle's finger is below its end, so the finger reaches a bottom edge and the end a top.
     fn edge_now(&self) -> Option<Edge> {
-        match self.text_grab() {
-            Some(grab) => self.edge_at(grab.finger_y).filter(|e| e.speed > 0.0).or_else(|| self.edge_at(grab.point.1).filter(|e| e.speed < 0.0)),
+        match self.handle_at() {
+            Some((point, finger_y)) => self.edge_at(finger_y).filter(|e| e.speed > 0.0).or_else(|| self.edge_at(point.1).filter(|e| e.speed < 0.0)),
             None => self.pointer.pos.and_then(|(_, y)| self.edge_at(y)),
         }
     }
@@ -344,6 +345,10 @@ impl RuntimeCore {
                 Effect::Scroll { scroll, by } => self.edge_scroll_by(scroll, by),
                 Effect::Extend => if self.text_grab().is_some() {
                     self.drag_text_handle();
+                } else if let Some(touch_ui::Grab::Field { extend, .. }) = &mut self.edit.selectable.grab {
+                    // A field's end moves through its state: at the next frame, as its drag's.
+                    *extend = true;
+                    queued = true;
                 } else if let Some((x, y)) = self.pointer.pos {
                     if self.edit.selectable.phase.dragging() {
                         self.selection_drag(x, y);
@@ -377,7 +382,7 @@ impl RuntimeCore {
     /// held press is extending: at or past its top or bottom (as drawn, inside its clips and the
     /// window), how fast that scrolls, and how far it still can.
     fn edge_at(&self, y: f32) -> Option<Edge> {
-        if !self.dragging_selection() || !(self.pointer.pressing() || self.text_grab().is_some()) { return None; }
+        if !self.dragging_selection() || !(self.pointer.pressing() || self.handle_at().is_some()) { return None; }
         let holder = self.drag_holder()?;
         let i = std::iter::successors(Some(holder), |&p| self.tree.nodes[p].parent)
             .find(|&p| self.tree.nodes[p].scroll.is_some() && self.tree.nodes[p].scroll_axes.has(false))?;
