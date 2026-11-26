@@ -77,10 +77,13 @@ impl RuntimeCore {
                 let (a, b) = e.range();
                 // A press in the selection keeps it for Cut and Copy. Elsewhere it moves the caret
                 // there, and on a misspelled word selects the word, as Chromium does. A touch
-                // host's long press selects any word, as Android's text does.
+                // host's long press selects any word, as Android's text does; in the blank
+                // beside or below the text it places the caret, for Paste to go there.
                 if a == b || caret < a || caret > b {
                     let word = match spell.then(|| crate::spell::misspelled_at(&e.text, caret)).flatten() {
-                        None if touch_host => Some(super::input_click::word_at(e, at)).filter(|(wa, wb)| e.text[*wa..*wb].chars().any(|c| !c.is_whitespace())),
+                        None if touch_host && super::input_click::on_text(e, l, tx, ty, s, single) => {
+                            Some(super::input_click::word_at(e, at)).filter(|(wa, wb)| e.text[*wa..*wb].chars().any(|c| !c.is_whitespace()))
+                        }
                         word => word,
                     };
                     match word {

@@ -115,6 +115,12 @@ pub(in crate::runtime) fn hit(e: &crate::edit::TextEdit, l: TextFlow<'_>, x: f32
     Hit { caret, side: at.side, cluster }
 }
 
+/// Whether layout point (x, y) is on a line's text, not in the blank beside or below it.
+pub(in crate::runtime) fn on_text(e: &crate::edit::TextEdit, l: TextFlow<'_>, x: f32, y: f32, s: f32, single: bool) -> bool {
+    let (px, py) = (f64::from(x * s), f64::from(y * s));
+    l.range_boxes(0, e.display_index(e.text.len()), true).iter().any(|(bb, _)| px >= bb.x0 && px <= bb.x1 && (single || (py >= bb.y0 && py <= bb.y1)))
+}
+
 /// The word at `h`, as a double press selects it.
 pub(in crate::runtime) fn word_at(e: &crate::edit::TextEdit, h: Hit) -> (usize, usize) { unit_at(e, h, Unit::Word) }
 
