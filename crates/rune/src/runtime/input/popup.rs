@@ -121,6 +121,21 @@ impl RuntimeCore {
         }
     }
 
+    /// The next of text's own menus for a host that shows those itself (`host.text_menus`),
+    /// marked open. An app's menu ahead of it is answered `None`, as where no menu is native.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn take_text_menu(&mut self, app: &mut dyn AppDriver) -> Option<Show> {
+        loop {
+            if self.host.popups.is_open() { return None; }
+            if self.host.popups.front()?.of_text()
+                && let Some(show) = self.take_popup()?
+            {
+                return Some(show);
+            }
+            self.resolve_popup(app, None).ok()?;
+        }
+    }
+
     /// The next menu anchors to an element and the runtime has changes the next frame commits
     /// (a pick that asked for another menu over what it mounted): open it after that frame.
     pub(crate) fn popup_waits_for_layout(&self) -> bool {

@@ -221,7 +221,8 @@ pub(crate) fn run_embed_frame<E: EmbedSurface>(surface: &mut E) -> FrameSummary 
 /// `rt.host.haptics` intact so the embedding host drains them via `LayerHost::take_haptics()`.
 pub(crate) fn flush_requests(rt: &mut RuntimeCore, app: &mut dyn AppDriver) {
     crate::clipboard::flush_memory(rt);
-    if rt.popup_menu().is_some() {
+    // A host that shows text's own menus takes them after the frame (`take_text_menu`).
+    if rt.popup_menu().is_some() && !rt.host.text_menus {
         rt.cancel_popups(app);
     }
     rt.refuse_file_dialog("native file dialogs are unsupported in embedded views");

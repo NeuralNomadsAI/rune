@@ -11,6 +11,9 @@ use super::lifecycle::{self, Effect, Event, Insets};
 use crate::app::App;
 use crate::embed::{EmbedFrame, LayerHost};
 use super::host_ime::{ImeBridge, Keyboard};
+use super::host_selection::{SelectionBridge, Toolbar};
+use crate::popup_menu::Show;
+use crate::runtime::touch_ui::{Ends, Handle};
 use crate::runtime::{RuntimeCore, Waker};
 use crate::{Ime, Key, KeyEvent, TouchPhase};
 
@@ -31,6 +34,14 @@ pub(super) trait Host {
     /// leaving a field), false to let the activity go back.
     fn back(&mut self) -> bool;
     fn core(&mut self) -> &mut RuntimeCore;
+    /// The selection's handles and toolbar (`runtime/selection/touch_ui.rs`).
+    fn selection_ends(&self) -> Option<Ends>;
+    fn take_text_menu(&mut self) -> Option<Show>;
+    fn open_text_menu(&mut self) -> bool;
+    fn resolve_menu(&mut self, picked: Option<&str>);
+    fn grab_handle(&mut self, handle: Handle) -> bool;
+    fn drag_handle(&mut self, x: f32, y: f32);
+    fn release_handle(&mut self);
 }
 
 impl<S: 'static> Host for LayerHost<S> {
@@ -52,6 +63,13 @@ impl<S: 'static> Host for LayerHost<S> {
         true
     }
     fn core(&mut self) -> &mut RuntimeCore { self.runtime_mut().core_mut() }
+    fn selection_ends(&self) -> Option<Ends> { self.runtime().selection_ends() }
+    fn take_text_menu(&mut self) -> Option<Show> { self.runtime_mut().take_text_menu() }
+    fn open_text_menu(&mut self) -> bool { self.runtime_mut().open_text_menu() }
+    fn resolve_menu(&mut self, picked: Option<&str>) { self.runtime_mut().resolve_popup(picked).ok(); }
+    fn grab_handle(&mut self, handle: Handle) -> bool { self.runtime_mut().grab_handle(handle) }
+    fn drag_handle(&mut self, x: f32, y: f32) { self.runtime_mut().drag_handle(x, y); }
+    fn release_handle(&mut self) { self.runtime_mut().release_handle(); }
 }
 
 type Start = Box<dyn FnOnce(NonNull<c_void>, (f32, f32), f32, bool, Waker) -> Result<Box<dyn Host>, String>>;
@@ -119,6 +137,7 @@ pub(super) struct View {
     insets: Insets,
     wake: Waker,
     ime: ImeBridge,
+    selection: SelectionBridge,
     clipboard: crate::clipboard::Client,
     #[cfg(feature = "accessibility")]
     a11y: Option<crate::a11y::android::Adapter>,
@@ -130,7 +149,7 @@ impl View {
         let start = take_registered()?;
         let mut clipboard = crate::clipboard::Client::default();
         clipboard.connect(wake.clone());
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), clipboard, #[cfg(feature = "accessibility")] a11y: None })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), selection: SelectionBridge::default(), clipboard, #[cfg(feature = "accessibility")] a11y: None })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -159,6 +178,7 @@ impl View {
                         self.clipboard.receive_core(host.core());
                         next = host.frame().into();
                         self.clipboard.flush_core(host.core());
+                        if self.selection.after_frame(host.as_mut()) { next = Next::VSync }
                         #[cfg(feature = "accessibility")]
                         if let Some(a11y) = &mut self.a11y {
                             let (queued, wake) = a11y.service(host.core(), "");
@@ -184,6 +204,8 @@ impl View {
         host.set_long_press(self.long_press);
         // Links go to the system (Intent.ACTION_VIEW), with its answer.
         host.core().host.open_urls_natively = true;
+        // `RuneView` shows text's menus as the selection toolbar, and handles on its ends.
+        host.core().host.text_menus = true;
         self.host = Some(host);
         Ok(())
     }
@@ -205,11 +227,41 @@ impl View {
     /// `time` its `getEventTime()` in seconds.
     pub(super) fn touch(&mut self, action: i32, index: usize, pointers: &[(i32, f32, f32)], time: f64) -> Next {
         let Some(host) = &mut self.host else { return Next::Idle };
+        if action == super::touch::ACTION_DOWN { self.selection.touch_down(host.as_mut()) }
         for (i, phase) in super::touch::phases(action, index, pointers.len()) {
             let (id, x, y) = pointers[i];
             host.touch(id as u64, phase, x / self.density, y / self.density, time);
         }
+        if matches!(action, super::touch::ACTION_UP | super::touch::ACTION_CANCEL) { self.selection.touch_up(host.as_mut()) }
         self.step(Event::Frame, None)
+    }
+
+    /// A selection handle's finger and its `phase` (`SelectionBridge::handle`), at (x, y) in device
+    /// pixels.
+    pub(super) fn handle(&mut self, handle: Handle, phase: i32, x: f32, y: f32) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        self.selection.handle(host.as_mut(), handle, phase, x / self.density, y / self.density);
+        self.step(Event::Frame, None)
+    }
+
+    /// The selection toolbar closed by itself, with the item at `index` picked or none (negative).
+    pub(super) fn toolbar_picked(&mut self, index: i32) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        self.selection.picked(host.as_mut(), index);
+        self.step(Event::Frame, None)
+    }
+
+    /// The handles' new place in device pixels, when it changed since the last call.
+    pub(super) fn take_handles(&mut self) -> Option<Option<Ends>> {
+        let px = |e: crate::runtime::touch_ui::End| crate::runtime::touch_ui::End { x: e.x * self.density, top: e.top * self.density, bottom: e.bottom * self.density, shown: e.shown };
+        Some(self.selection.take_handles()?.map(|ends| match ends {
+            Ends::Caret(at) => Ends::Caret(px(at)),
+            Ends::Range { start, end } => Ends::Range { start: px(start), end: px(end) },
+        }))
+    }
+
+    pub(super) fn take_toolbar(&mut self) -> Option<Toolbar> {
+        self.selection.take_toolbar()
     }
 
     fn sync_ime(&mut self) {

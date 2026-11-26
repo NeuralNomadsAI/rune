@@ -367,9 +367,16 @@ pub(crate) struct Request {
     pub on_pick: PickFn,
     /// A text field's own menu, whose picks the runtime acts on.
     pub field: Option<Box<crate::runtime::field_menu::FieldMenu>>,
+    /// Selected text's own menu (Copy).
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub selection: bool,
 }
 
 impl Request {
+    /// Text's own menu, which a touch host shows as its selection toolbar.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn of_text(&self) -> bool { self.field.is_some() || self.selection }
+
     pub(crate) fn validate(&self) -> Result<(), String> { self.menu.validate(&mut Default::default()) }
 }
 
@@ -416,7 +423,7 @@ impl Tx {
             // None once the playground has dropped the stage that asked.
             if let Some(s) = s.cast::<S>() { on_pick(s, picked, tx); }
         });
-        let request = Request { menu, anchor: anchor.into(), on_pick, field: None };
+        let request = Request { menu, anchor: anchor.into(), on_pick, field: None, selection: false };
         self.popups.push(Call(Rc::new(RefCell::new(Some(request)))));
     }
 

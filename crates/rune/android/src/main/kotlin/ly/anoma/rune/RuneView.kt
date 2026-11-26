@@ -39,6 +39,10 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private val main = Handler(Looper.getMainLooper())
     private val later = Runnable { schedule(0) }
     private val keyboard = context.getSystemService(InputMethodManager::class.java)
+    private val selectionUi = RuneSelection(this, object : RuneSelection.Events {
+        override fun handle(which: Int, phase: Int, x: Float, y: Float) = schedule(nativeHandle(handle, which, phase, x, y))
+        override fun picked(index: Int) = schedule(nativeToolbarPicked(handle, index))
+    })
 
     init {
         RuneServices.install(context)
@@ -64,6 +68,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         hasSurface = false
         cancelFrames()
+        selectionUi.hide()
         nativeSurfaceDestroyed(handle)
     }
 
@@ -86,6 +91,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         }
         for (i in 0 until n) { xs[i] = event.getX(i); ys[i] = event.getY(i) }
         schedule(nativeTouch(handle, event.actionMasked, event.actionIndex, ids, xs, ys, event.eventTime))
+        if (event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < ViewConfiguration.getLongPressTimeout()) selectionUi.tapped()
         return true
     }
 
@@ -143,6 +149,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         if (event.action != KeyEvent.ACTION_DOWN) return false
         val next = nativeKey(handle, event.keyCode, event.getUnicodeChar(0), event.unicodeChar, event.metaState, event.repeatCount > 0)
         if (next == UNHANDLED) return false
+        selectionUi.typed()
         schedule(next)
         return true
     }
@@ -152,11 +159,13 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     /** What the input method edits: Rune's focused field, through its composition. */
     private inner class RuneInput : BaseInputConnection(this@RuneView, false) {
         override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+            selectionUi.typed()
             schedule(nativeCommit(handle, text.toString()))
             return true
         }
 
         override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+            selectionUi.typed()
             schedule(nativeCompose(handle, text.toString()))
             return true
         }
@@ -264,10 +273,14 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         }
     }
 
-    fun resume() = schedule(nativeResumed(handle))
+    fun resume() {
+        schedule(nativeResumed(handle))
+        selectionUi.show()
+    }
 
     fun pause() {
         cancelFrames()
+        selectionUi.hide()
         nativePaused(handle)
     }
 
@@ -279,6 +292,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     /** Frees the app; the view is unusable afterwards. */
     fun destroy() {
         cancelFrames()
+        selectionUi.hide()
         nativeDrop(handle)
         handle = 0L
     }
@@ -308,6 +322,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private fun schedule(next: Long) {
         if (handle == 0L) return
         applyKeyboard()
+        nativeTakeHandles(handle)?.let(selectionUi::place)
+        nativeTakeToolbar(handle)?.let(selectionUi::toolbar)
         when {
             next == 0L -> if (!frameQueued) {
                 frameQueued = true
@@ -358,6 +374,10 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeA11yFindFocus(handle: Long, focus: Int): AccessibilityNodeInfo?
     private external fun nativeA11yPerformAction(handle: Long, id: Int, action: Int, arguments: Bundle?): Boolean
     private external fun nativeA11yHover(handle: Long, action: Int, x: Float, y: Float): Boolean
+    private external fun nativeTakeHandles(handle: Long): FloatArray?
+    private external fun nativeTakeToolbar(handle: Long): String?
+    private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float): Long
+    private external fun nativeToolbarPicked(handle: Long, index: Int): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
     private external fun nativeBack(handle: Long): Boolean
     private external fun nativeDrop(handle: Long)

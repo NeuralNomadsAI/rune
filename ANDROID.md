@@ -60,8 +60,18 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   a fling's velocity) goes to Rune's touch handling: a tap clicks, a drag scrolls and flings, a
   finger held for the system's long-press delay (`ViewConfiguration.getLongPressTimeout()`, which
   the accessibility Touch & hold delay raises) is a secondary click. `Cx::touch_controls` and
-  `Cx::hover_none` are true. `Tx::popup_menu` has no native menu yet and answers `None`, so an
-  app draws its own (rune-kit's menus do).
+  `Cx::hover_none` are true. `Tx::popup_menu` has no native menu and answers `None`, so an app
+  draws its own (rune-kit's menus do).
+- **Text selection**: a long press on selectable text or in a field selects the word under it,
+  as Android's text does. `RuneView` hangs the system's handles on the selection's ends and shows
+  the text's own menu (Cut, Copy, Paste, Select all, in the system's words) as the floating
+  toolbar, even where the app has `App::on_field_menu`. A handle drags its end, with the system's
+  magnifier over the line (Android 9+). A tap in a field puts a handle under its caret for four
+  seconds: it drags the caret, and a tap on it shows the toolbar. A finger changes the selection
+  when it lifts as a tap, so a scroll under selected text keeps it; its toolbar goes while the
+  scroll lasts. A field with its own `on_secondary_press` shows that on a long press instead.
+  Handles don't scroll a viewport at its edge, and a selection reaching into rows a virtual list
+  has unmounted keeps its ends.
 - **Text input**: when a field takes text, `RuneView` offers the input method an
   `InputConnection` and shows the keyboard (and hides it when the field lets go): committed text,
   the composition (`setComposingText`, `finishComposingText`), deletions, keys and the editor

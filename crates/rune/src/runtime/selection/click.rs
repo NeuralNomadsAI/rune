@@ -76,6 +76,14 @@ impl InputClick {
         self.cancel_drag_steps();
     }
 
+    /// A touch host's long press selected a word in field `path`: the press's own queued steps
+    /// would put the caret back under the finger.
+    pub(in crate::runtime) fn cancel_steps(&mut self, path: &str) {
+        for (p, step) in &mut self.steps {
+            if p == path { *step = Step::Cancelled; }
+        }
+    }
+
     /// Queued drag steps stay, paired with their `Action::Focus` entries, but do nothing.
     fn cancel_drag_steps(&mut self) {
         for (_, step) in &mut self.steps {
@@ -106,6 +114,9 @@ pub(in crate::runtime) fn hit(e: &crate::edit::TextEdit, l: TextFlow<'_>, x: f32
     let cluster = at.before.map_or(caret, |b| e.model_index(b));
     Hit { caret, side: at.side, cluster }
 }
+
+/// The word at `h`, as a double press selects it.
+pub(in crate::runtime) fn word_at(e: &crate::edit::TextEdit, h: Hit) -> (usize, usize) { unit_at(e, h, Unit::Word) }
 
 fn unit_at(e: &crate::edit::TextEdit, h: Hit, unit: Unit) -> (usize, usize) {
     if unit == Unit::Char {

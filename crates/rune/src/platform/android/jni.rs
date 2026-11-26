@@ -52,8 +52,8 @@ impl WakeTarget {
     }
 }
 
-struct Handle {
-    view: View,
+pub(super) struct Handle {
+    pub(super) view: View,
     window: Option<NonNull<ndk_sys::ANativeWindow>>,
     wake: Arc<WakeTarget>,
 }
@@ -65,13 +65,13 @@ impl Handle {
     }
 }
 
-fn next(n: Next) -> jlong {
+pub(super) fn next(n: Next) -> jlong {
     match n { Next::VSync => 0, Next::AfterMs(ms) => jlong::from(ms.max(1)), Next::Idle => -1 }
 }
 
 /// # Safety
 /// `h` is 0 or a handle `nativeNew` returned and `nativeDrop` hasn't freed.
-unsafe fn handle<'a>(h: jlong) -> Option<&'a mut Handle> {
+pub(super) unsafe fn handle<'a>(h: jlong) -> Option<&'a mut Handle> {
     // SAFETY: per this function's contract, a non-zero `h` is a live `Box<Handle>`.
     unsafe { (h as *mut Handle).as_mut() }
 }

@@ -79,6 +79,10 @@ pub(crate) struct HostState {
     url_scheme_requests: Vec<String>,
     /// True when attached to a live window, overlay or web canvas, not a headless or scripted run.
     pub(crate) open_urls_natively: bool,
+    /// The host shows text's own menus (a field's, selected text's Copy) as its platform's
+    /// selection toolbar, with handles on the selection's ends: Android. A long press selects
+    /// the word under it, as that platform's text does.
+    pub(crate) text_menus: bool,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
     pub(in crate::runtime) popups: popup_dispatch::Popups,
     /// Pending text-field menu delivered to `App::on_field_menu`, awaiting `Tx::resolve_field_menu`.
@@ -159,6 +163,7 @@ impl HostState {
             path_requests: Vec::new(),
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
+            text_menus: false,
             popups: Default::default(),
             field_menu_fallback: None,
             field_menu_seq: 0,

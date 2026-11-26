@@ -332,7 +332,8 @@ impl RuntimeCore {
             return;
         }
         self.playground_pointer_down(app, x);
-        self.press_selection(target, x, y);
+        // A touch host's finger leaves the selection alone until it lifts as a tap (`touch.rs`).
+        if !(touch && self.host.text_menus) { self.press_selection(target, x, y); }
         // Inside a draggable row, dragging drags the row; clicks still select words and lines.
         if target.is_some_and(|t| self.tree.nodes[t].handlers.on_drag.is_some() || self.tree.nodes[t].handlers.drag_out.is_some()) {
             self.select_step(selectable::phase::Event::Release);

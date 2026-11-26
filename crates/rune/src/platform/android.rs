@@ -19,11 +19,15 @@ macro_rules! call {
 mod host;
 #[cfg(target_os = "android")]
 mod host_ime;
+#[cfg(target_os = "android")]
+mod host_selection;
 pub(crate) mod ime_window;
 #[cfg(test)]
 mod ime_window_tests;
 #[cfg(target_os = "android")]
 mod jni;
+#[cfg(target_os = "android")]
+mod jni_selection;
 pub(crate) mod keys;
 #[cfg(test)]
 mod keys_tests;
@@ -32,6 +36,9 @@ pub(crate) mod lifecycle;
 mod lifecycle_tests;
 #[cfg(target_os = "android")]
 mod logcat;
+pub(crate) mod selection;
+#[cfg(test)]
+mod selection_tests;
 #[cfg(target_os = "android")]
 pub(crate) mod services;
 pub(crate) mod touch;

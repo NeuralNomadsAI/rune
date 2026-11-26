@@ -37,7 +37,7 @@ impl RuntimeCore {
         if self.host.force_field_menu_fallback {
             return true;
         }
-        !crate::popup_menu_supported()
+        !crate::popup_menu_supported() && !self.host.text_menus
     }
 
     pub(in crate::runtime) fn field_menu(&mut self, app: &mut dyn AppDriver, path: String, at: (f32, f32), hit_at: Option<(f32, f32)>, one: &mut Tx) -> bool {
@@ -64,6 +64,7 @@ impl RuntimeCore {
         if self.kbd.focus.path() != Some(path.as_str()) {
             self.set_focus(app, Some(path.clone()), false);
         }
+        let touch_host = self.host.text_menus;
         let changed_sel = {
             let e = access(app.states());
             e.set_single_line(single);
@@ -71,12 +72,18 @@ impl RuntimeCore {
             if let (Some([tx, ty]), Some(l)) = (point, layout.as_ref().map(TextLayout::view))
                 && e.preedit().is_none()
             {
-                let caret = hit(e, l, tx, ty, s, single).caret;
+                let at = hit(e, l, tx, ty, s, single);
+                let caret = at.caret;
                 let (a, b) = e.range();
                 // A press in the selection keeps it for Cut and Copy. Elsewhere it moves the caret
-                // there, and on a misspelled word selects the word, as Chromium does.
+                // there, and on a misspelled word selects the word, as Chromium does. A touch
+                // host's long press selects any word, as Android's text does.
                 if a == b || caret < a || caret > b {
-                    match spell.then(|| crate::spell::misspelled_at(&e.text, caret)).flatten() {
+                    let word = match spell.then(|| crate::spell::misspelled_at(&e.text, caret)).flatten() {
+                        None if touch_host => Some(super::input_click::word_at(e, at)).filter(|(wa, wb)| e.text[*wa..*wb].chars().any(|c| !c.is_whitespace())),
+                        word => word,
+                    };
+                    match word {
                         Some((wa, wb)) => e.set_selection(wa, wb),
                         None => e.set_caret(caret),
                     }
@@ -84,6 +91,7 @@ impl RuntimeCore {
             }
             (e.anchor, e.focus) != before
         };
+        if touch_host { self.edit.input_click.cancel_steps(&path); }
         if changed_sel && let Some(selection_change) = selection_change {
             selection_change(app.states(), one);
         }
@@ -156,6 +164,7 @@ impl RuntimeCore {
             anchor: PopupAnchor::Point(at.0, at.1),
             on_pick: Box::new(|_, _, _| {}),
             field: Some(Box::new(field)),
+            selection: false,
         });
         true
     }

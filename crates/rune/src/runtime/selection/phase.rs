@@ -32,6 +32,9 @@ pub(in crate::runtime) struct TextSel {
     pub(in crate::runtime) affinity: parley::Affinity,
     /// Explicit state machine for caret-browsing moves crossing into unmounted virtual rows.
     pub(in crate::runtime) pending_move: super::caret_browse::pending::State,
+    /// The selection handle a touch host's finger holds.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(in crate::runtime) grab: Option<super::touch_ui::Grab>,
 }
 
 impl Default for TextSel {
@@ -46,6 +49,7 @@ impl Default for TextSel {
             goal_x: None,
             affinity: parley::Affinity::Downstream,
             pending_move: super::caret_browse::pending::State::Idle,
+            grab: None,
         }
     }
 }

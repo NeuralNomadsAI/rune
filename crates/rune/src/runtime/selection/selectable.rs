@@ -35,6 +35,8 @@ pub(crate) mod phase;
 mod selection_toolbar;
 #[path = "text_selection.rs"]
 mod text_selection;
+#[path = "touch_ui.rs"]
+pub(crate) mod touch_ui;
 pub(crate) use copy_join::CopyJoin;
 pub(crate) use selection_toolbar::OnPress;
 pub use text_selection::{SelectedText, SelectionChange, TextSelection};
@@ -746,7 +748,7 @@ impl RuntimeCore {
     pub(in crate::runtime) fn selection_menu(&mut self, app: &dyn ViewDriver, path: &str, x: f32, y: f32) -> bool {
         let Some(i) = self.live(path) else { return false };
         if !self.is_selectable(i) || self.tree.nodes[i].handlers.on_secondary_press.is_some() { return false; }
-        if SECONDARY_SELECTS_WORD
+        if (SECONDARY_SELECTS_WORD || self.host.text_menus)
             && let Some(at) = self.text_index_at(i, x, y)
             && range_in(&self.selection_ranges(), i).is_none_or(|(a, b)| at < a || at >= b)
         {
@@ -755,6 +757,12 @@ impl RuntimeCore {
             self.edit.selectable.presses = Default::default();
             self.select_step(phase::Event::Select(phase::Selection::new(path.to_owned(), content, (a, b), (a, b))));
         }
+        self.push_selection_menu(app, path, x, y);
+        true
+    }
+
+    /// Asks for the selection's Copy menu at window point (x, y).
+    fn push_selection_menu(&mut self, app: &dyn ViewDriver, path: &str, x: f32, y: f32) {
         let text = self.copy_text(app);
         let html = text.as_ref().and_then(|_| self.copy_html());
         let mut copy = crate::PopupItem::new("copy", crate::labels::label(crate::Label::Copy)).enabled(text.is_some());
@@ -773,8 +781,8 @@ impl RuntimeCore {
                 }
             }),
             field: None,
+            selection: true,
         });
-        true
     }
 }
 

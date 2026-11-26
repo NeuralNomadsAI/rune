@@ -322,3 +322,23 @@ fn frame_summary_is_copy_and_step_and_flush_preserves_haptics_for_host() {
     );
 }
 
+#[test]
+fn a_frame_answers_menus_no_host_shows_and_leaves_a_touch_hosts_text_menus_to_it() {
+    use crate::{TextStyle, text};
+    let start = crate::time::now();
+    let view = |_: &(), _: &mut crate::Cx<()>| text("hello brave world").key("t").font(TextStyle::new(14.0, 400.0)).selectable(true);
+    for (touch_host, kept) in [(false, false), (true, true)] {
+        let mut clock = FrameClock::new(start);
+        let mut rt = Runtime::new((), view, (200.0, 40.0), Env::default());
+        rt.wall_start = Some(start);
+        rt.core_mut().host.text_menus = touch_host;
+        rt.frame(0.0);
+        let (x, y) = rt.find("t").unwrap();
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        assert!(rt.popup_menu().is_some(), "the Copy menu is asked for");
+        let (core, mut app) = rt.split_mut();
+        step_and_flush(&mut clock, core, &mut app, start + FRAME_60HZ, false);
+        assert_eq!(rt.popup_menu().is_some(), kept, "touch host: {touch_host}");
+    }
+}

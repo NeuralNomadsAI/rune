@@ -211,6 +211,8 @@ pub(in crate::runtime) struct Touch {
     /// The system's long-press delay a host reported (`Runtime::set_touch_long_press`).
     long_press: Option<f64>,
     hold_command: Option<TouchHoldCommand>,
+    /// The finger down has panned a viewport, so its lift is no tap.
+    panned: bool,
     /// [`Drag::data`] kept across an `El::on_edge_drag` gesture's phases.
     pub(in crate::runtime) edge_data: f32,
     /// Active `El::on_edge_drag` target and fallback handler, kept in lockstep with `Mode::Edge`.
@@ -287,6 +289,10 @@ impl RuntimeCore {
     pub(crate) fn set_touch_hold_policy(&mut self, policy: TouchHoldPolicy) {
         self.pointer.touch.policy = policy;
     }
+
+    /// The last finger down scrolled a viewport: its lift was no tap.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn touch_panned(&self) -> bool { self.pointer.touch.panned }
 
     /// The system's long-press delay in seconds; a non-positive or non-finite one keeps the default.
     pub(crate) fn set_touch_long_press(&mut self, secs: f64) {
@@ -390,12 +396,21 @@ impl RuntimeCore {
                 }
                 TouchEffect::ClearTitlebar => self.host.titlebar.clear(),
                 TouchEffect::BeginPan { origin, horizontal, vertical } => {
+                    self.pointer.touch.panned = true;
                     let _ = self.touch_scroll_pan(origin.0, origin.1, horizontal, vertical);
                 }
                 TouchEffect::PanMove { scroll, along } => self.touch_scroll_move(scroll, along),
                 TouchEffect::EndScroll { scroll, velocity } => self.touch_scroll_end(scroll, velocity),
                 TouchEffect::PointerMove((x, y)) => self.pointer_move(app, x, y),
-                TouchEffect::PointerUp((x, y)) => self.pointer_up(app, x, y),
+                TouchEffect::PointerUp((x, y)) => {
+                    // A touch host's finger changes the text selection when it lifts as a tap,
+                    // not when it lands: it may be starting a scroll under selected text.
+                    if self.host.text_menus && !self.pointer.touch.panned {
+                        self.press_selection(self.primary_target(x, y), x, y);
+                        self.select_step(selectable::phase::Event::Release);
+                    }
+                    self.pointer_up(app, x, y);
+                }
                 TouchEffect::PointerLeave => self.pointer_leave(),
                 TouchEffect::ReleaseWithoutClick => {
                     self.pointer.note_button_up(crate::PointerButton::Primary);
@@ -447,6 +462,7 @@ impl RuntimeCore {
         let edge = self.edge_drag_candidates(x, y);
         let has_edge = edge_drag::any_candidate(edge);
         let scroll = self.touch_scroll_start(x, y);
+        self.pointer.touch.panned = false;
         self.pointer_move(app, x, y);
         self.press_down(app, x, y, true);
         let now = self.now_clock();

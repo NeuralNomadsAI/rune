@@ -139,6 +139,23 @@ impl RuntimeCore {
         out
     }
 
+    /// The first and the last line box of what is selected, each with the node whose text it
+    /// is: the focused field's selection, else the selectable text's.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(in crate::runtime) fn selection_end_boxes(&self) -> Option<[(usize, [f32; 4]); 2]> {
+        let nodes = &self.tree.nodes;
+        if let Some(i) = self.focused_index().filter(|&i| nodes[i].input.is_some()) {
+            let boxes = self.field_selection_boxes_of(nodes, i);
+            return Some([(i, *boxes.first()?), (i, *boxes.last()?)]);
+        }
+        let ranges = self.selection_ranges();
+        let (&(i, a, b), &(j, c, d)) = (ranges.first()?, ranges.last()?);
+        let (mut first, mut last) = (Vec::new(), Vec::new());
+        self.text_boxes(nodes, i, a, b, &mut first);
+        self.text_boxes(nodes, j, c, d, &mut last);
+        Some([(i, *first.first()?), (j, *last.last()?)])
+    }
+
     /// The selection's ranges by the path of each selected text. A measure reads them before it
     /// runs: reusing a `memo` moves its nodes out of the last commit's, leaving placeholders
     /// the selection can't be found in.
