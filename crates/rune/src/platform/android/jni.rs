@@ -295,11 +295,13 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeEditor(_: *mut JNIEnv, _: j
     unsafe { handle(h) }.and_then(|h| h.view.ime_bridge().editor()).map_or(0, |e| e.code())
 }
 
-/// What the keyboard should do now (`Keyboard` as an int), once.
+/// What the keyboard should do now (`Keyboard` as an int), once; with `REVEAL` when a tapped
+/// field wants it shown as it is.
 #[unsafe(no_mangle)]
 extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeKeyboard(_: *mut JNIEnv, _: jobject, h: jlong) -> jint {
+    const REVEAL: jint = 8;
     // SAFETY: `h` comes from `nativeNew`.
-    unsafe { handle(h) }.map_or(0, |h| h.view.take_keyboard() as jint)
+    unsafe { handle(h) }.map_or(0, |h| h.view.take_keyboard() as jint | if h.view.take_keyboard_reveal() { REVEAL } else { 0 })
 }
 
 #[unsafe(no_mangle)]

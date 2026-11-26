@@ -269,6 +269,15 @@ impl RuntimeCore {
         if !tap { return }
         self.edit.input_click.steps.push_back((path.clone(), step));
         self.frame.queue.push(Action::Focus(path, x, y));
+        self.host.field_tap = true;
+    }
+
+    /// Whether a finger tapped a text field since the last call: a host with an on-screen
+    /// keyboard brings it back to a field that kept its focus while the user put it away, as a
+    /// tap on Android's own fields does.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn take_field_tap(&mut self) -> bool {
+        std::mem::take(&mut self.host.field_tap)
     }
 
     /// Focuses text field `ji` with its caret at (x, y), as a single click does, but holds no

@@ -94,7 +94,9 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   selection (`updateSelection`), takes text back to recompose it (`setComposingRegion`) and deletes
   around the caret by range. A keyboard's image (`commitContent`: a sticker, a GIF's first frame) is
   decoded off the UI thread and pasted as PNG. A hardware keyboard's keys arrive as Rune keys, Ctrl
-  shortcuts included. The keyboard is told what the field is (`EditorInfo`) and restarted when
+  shortcuts included. A tap on a field brings the keyboard back when the user had put it away
+  (Back hides it and leaves the field its focus). The keyboard is told what the field is
+  (`EditorInfo`) and restarted when
   focus goes to another kind: a one-line field has an action key, which submits as Return does,
   where a longer one has Return; a secret field (`El::secure`) gets the keyboard as a password's,
   with no correction, suggestion or learning, and its text goes in as typed keys since it takes no
