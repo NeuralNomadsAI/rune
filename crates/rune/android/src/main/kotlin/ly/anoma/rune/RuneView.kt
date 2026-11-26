@@ -16,6 +16,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewConfiguration
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.inputmethod.BaseInputConnection
@@ -115,9 +116,15 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider? =
         if (handle != 0L && nativeA11yAvailable(handle)) nodes else super.getAccessibilityNodeProvider()
 
-    /** Explore by touch: the node under the finger takes accessibility focus. */
+    private val accessibility = context.getSystemService(AccessibilityManager::class.java)
+
+    /**
+     * Explore by touch: the node under the finger takes accessibility focus. A mouse's hover without
+     * a screen reader stays out of it, as looking a node up builds the whole tree.
+     */
     override fun dispatchHoverEvent(event: MotionEvent): Boolean =
-        (handle != 0L && nativeA11yHover(handle, event.action, event.x, event.y)) || super.dispatchHoverEvent(event)
+        (handle != 0L && accessibility.isTouchExplorationEnabled && nativeA11yHover(handle, event.action, event.x, event.y)) ||
+            super.dispatchHoverEvent(event)
 
     override fun onCheckIsTextEditor() = handle != 0L && nativeWantsText(handle)
 
