@@ -88,6 +88,10 @@ pub(crate) enum ReacquireReason {
     /// A handler changed `Tx::set_srgb_blend`; the surface and renderer reconfigure for the new
     /// target format before re-acquiring.
     Reblend,
+    /// A content-sized overlay's committed layout changed height; resize, re-place, and
+    /// reconfigure its surface before re-acquiring so the new content presents in the same frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    ContentResize,
 }
 
 /// Result of [`FrameHost::post_step_check`].
@@ -100,6 +104,10 @@ pub(crate) enum PostStepCheck {
     /// Drop the current drawable and treat the frame as missed (used by diagnostic miss hooks).
     #[cfg(any(test, feature = "frame-profile"))]
     Missed(Missed),
+    /// Drop the current drawable without presenting or backing off (Wayland layer-shell
+    /// content resize waiting for the compositor's matching `configure`).
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    Hold,
 }
 
 /// Result of [`FrameHost::prepare_render`].
@@ -173,6 +181,8 @@ pub(crate) enum Event {
     PostStepReacquire(ReacquireReason),
     #[cfg(any(test, feature = "frame-profile"))]
     PostStepMissed(Missed),
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    PostStepHold,
     Reacquired,
     ReacquireMissed(Missed),
     Synced,
@@ -199,6 +209,8 @@ pub(crate) enum Effect {
     DropAndReacquire(ReacquireReason),
     #[cfg(any(test, feature = "frame-profile"))]
     DropAndMiss(Missed),
+    #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+    DropAndHold,
     Missed { missed: Missed, stepped: bool },
     Sync,
     Prepare,
@@ -288,6 +300,11 @@ pub(crate) fn step(phase: &mut Phase, event: Event) -> Effects<Effect> {
         (Phase::PostStepChecking { .. }, Event::PostStepMissed(missed)) => {
             *phase = Phase::Done(Outcome::Missed);
             Effects::one(Effect::DropAndMiss(missed))
+        }
+        #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+        (Phase::PostStepChecking { .. }, Event::PostStepHold) => {
+            *phase = Phase::Done(Outcome::Skipped);
+            Effects::one(Effect::DropAndHold)
         }
         (Phase::Reacquiring { reacquired }, Event::Reacquired) => {
             *phase = Phase::PostStepChecking { reacquired };
@@ -391,6 +408,12 @@ pub(crate) trait FrameHost {
     /// `Missed::Unconfigured`.
     #[inline]
     fn prepare_reacquire(&mut self, _reason: ReacquireReason, _info: &mut StepInfo) -> bool { true }
+
+    /// Called immediately after [`run`] drops an acquired drawable early (before post-step
+    /// reacquisition, diagnostic miss, or Wayland content-resize hold) so hosts can release
+    /// frame-texture tracking before any surface teardown or reconfiguration.
+    #[inline]
+    fn on_drawable_dropped(&mut self) {}
 
     /// Handles a missed acquire or failed reconfiguration. `stepped` is `true` iff the runtime
     /// already stepped for this frame, so the host must not step it a second time.
@@ -510,11 +533,14 @@ pub(crate) fn run<H: FrameHost>(host: &mut H) -> Outcome {
             PostStepCheck::Reacquire(reason) => Event::PostStepReacquire(reason),
             #[cfg(any(test, feature = "frame-profile"))]
             PostStepCheck::Missed(missed) => Event::PostStepMissed(missed),
+            #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+            PostStepCheck::Hold => Event::PostStepHold,
         };
         match step(&mut phase, event) {
             Effects::One(Effect::Sync) => break,
             Effects::One(Effect::DropAndReacquire(reason)) => {
                 drop(drawable);
+                host.on_drawable_dropped();
                 let reacquired = if host.prepare_reacquire(reason, &mut info) {
                     host.acquire()
                 } else {
@@ -535,7 +561,14 @@ pub(crate) fn run<H: FrameHost>(host: &mut H) -> Outcome {
             #[cfg(any(test, feature = "frame-profile"))]
             Effects::One(Effect::DropAndMiss(missed)) => {
                 drop(drawable);
+                host.on_drawable_dropped();
                 host.on_missed(missed, true);
+                return phase.outcome();
+            }
+            #[cfg(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
+            Effects::One(Effect::DropAndHold) => {
+                drop(drawable);
+                host.on_drawable_dropped();
                 return phase.outcome();
             }
             _ => unreachable!(),

@@ -276,7 +276,7 @@ impl RuntimeCore {
     }
 
     pub(in crate::runtime) fn content_of(&self, i: usize) -> &str {
-        self.tree.nodes[i].text.as_ref().map_or("", |t| t.content.as_str())
+        self.tree.nodes[i].text.as_ref().map_or("", |t| t.content_str())
     }
 
     /// The selection group node `i` is in: its nearest `El::selection_group` ancestor.
@@ -588,10 +588,16 @@ impl RuntimeCore {
     /// Byte offset of node `i`'s text under window point (x, y), where it was drawn this frame.
     pub(in crate::runtime) fn text_index_at(&self, i: usize, x: f32, y: f32) -> Option<usize> {
         let n = &self.tree.nodes[i];
-        let (spec, flow) = (n.text.as_ref()?, n.text_layout.as_ref()?.view());
-        let s = self.env.scale;
+        let spec = n.text.as_ref()?;
         let z = self.paint.drawn_scale.get(i).copied().unwrap_or(1.0).max(1e-4);
         let (rect, x, y) = self.unturned_box_and_point(i, x, y);
+        if let Some(pt) = spec.positioned() {
+            let tf = super::positioned::PositionedTransform::from_window_box(n, pt, rect, z);
+            let [sx, sy] = tf.to_source(x, y)?;
+            return Some(pt.hit(sx, sy).0);
+        }
+        let flow = n.text_layout.as_ref()?.view();
+        let s = self.env.scale;
         let [ox, oy] = links::origin(n, spec, flow, rect, s, z);
         let px = s / z;
         let at = flow.hit((x - ox) * px, (y - oy) * px).index;
@@ -645,38 +651,6 @@ impl RuntimeCore {
         (v[0] < v[2] && v[1] < v[3]).then_some(v)
     }
 
-    /// A primary press on `target` (None: on nothing). On selectable text away from its links it
-    /// starts a selection: one click places it, two select a word, three a paragraph, and Shift
-    /// extends the current one, into another text of its selection group too. Anywhere else it
-    /// clears the selection.
-    pub(in crate::runtime) fn selection_down(&mut self, target: Option<usize>, x: f32, y: f32) {
-        use virtual_selection::EndRef;
-        let Some(i) = target.filter(|&i| self.is_selectable(i) && self.link_at(i, x, y).is_none()) else {
-            self.clear_text_selection();
-            self.edit.selectable.presses.clear();
-            return;
-        };
-        let Some(at) = self.text_index_at(i, x, y) else { return };
-        let path = self.tree.nodes[i].path.clone();
-        let content = self.content_of(i).to_owned();
-        let now = self.now_clock();
-        let clicks = self.edit.selectable.presses.press(&path, now, (x, y), self.double_click_interval).min(3);
-        let i_end = EndRef::Mounted(i);
-        let holder = self.selection_holder_end().filter(|&h| h == i_end || self.end_same_group(h, i_end));
-        match holder {
-            // Keep the anchor; the focus follows the pointer from here.
-            Some(h) if clicks == 1 && self.edit.selectable.shift => {
-                self.select_step(phase::Event::Extend { focus: at, far: (h != i_end).then(|| phase::Far::new(path, content)) });
-            }
-            _ => {
-                let unit = match clicks { 1 => Unit::Char, 2 => Unit::Word, _ => Unit::Paragraph };
-                let origin = self.unit_in(i, at, unit);
-                let origin = if unit == Unit::Word { with_trailing_space(&content, origin) } else { origin };
-                self.select_step(phase::Event::Press { path, content, unit, origin });
-            }
-        }
-    }
-
     /// Snapshot of an in-progress text selection drag's endpoints, used to detect whether a
     /// pointer move changed the painted selection.
     pub(in crate::runtime) fn selection_drag_snapshot(&self) -> Option<(usize, usize, Option<String>)> {
@@ -689,9 +663,18 @@ impl RuntimeCore {
     /// clickable row), so this follows the selection's own text.
     pub(in crate::runtime) fn selection_drag(&mut self, x: f32, y: f32) {
         use virtual_selection::EndRef;
-        let phase::Phase::Dragging { unit, selection } = &self.edit.selectable.phase else { return };
-        let (unit, origin) = (*unit, selection.origin);
-        let Some(h) = self.selection_holder_end() else { self.clear_text_selection(); return };
+        let Some((selection, unit, armed)) = self.edit.selectable.phase.drag_selection() else { return };
+        if armed == Some(true)
+            && !self.pointer.press_held().is_some_and(|h| h.moved && h.hit != crate::runtime::capture::Hit::Cancelled)
+        {
+            return;
+        }
+        let (origin, armed_path) = (selection.origin, armed.is_some().then(|| selection.path.clone()));
+        let h = match armed_path {
+            Some(path) => self.live(&path).filter(|&i| self.is_selectable(i)).map(EndRef::Mounted),
+            None => self.selection_holder_end(),
+        };
+        let Some(h) = h else { self.clear_text_selection(); return };
         let g = self.end_group_path(h).and_then(|gp| self.live(gp));
         let Some((j, at)) = (match (g, h) {
             (Some(g), _) => self.group_point(g, h, x, y),
@@ -711,7 +694,7 @@ impl RuntimeCore {
             phase::Reach::Anchor
         } else {
             let n = &self.tree.nodes[j];
-            phase::Reach::Far { path: &n.path, content: n.text.as_ref().map_or("", |t| t.content.as_str()) }
+            phase::Reach::Far { path: &n.path, content: n.text.as_ref().map_or("", |t| t.content_str()) }
         };
         let effects = phase::step(&mut self.edit.selectable.phase, phase::Event::Drag { anchor, focus, reach });
         self.carry_select(effects);
@@ -757,20 +740,23 @@ impl RuntimeCore {
             self.edit.selectable.presses = Default::default();
             self.select_step(phase::Event::Select(phase::Selection::new(path.to_owned(), content, (a, b), (a, b))));
         }
-        self.push_selection_menu(app, path, x, y);
-        true
+        self.push_selection_menu(app, path, x, y)
     }
 
-    /// Asks for the selection's Copy menu at window point (x, y).
-    fn push_selection_menu(&mut self, app: &dyn ViewDriver, path: &str, x: f32, y: f32) {
+    /// Asks for the selection's Copy menu at window point (x, y). False with no menu to show.
+    fn push_selection_menu(&mut self, app: &dyn ViewDriver, path: &str, x: f32, y: f32) -> bool {
         let text = self.copy_text(app);
         let html = text.as_ref().and_then(|_| self.copy_html());
-        let mut copy = crate::PopupItem::new("copy", crate::labels::label(crate::Label::Copy)).enabled(text.is_some());
-        // The primary modifier, as the copy key handler takes it: ⌘C on macOS, Ctrl+C elsewhere.
-        if let Ok(shortcut) = "mod+c".parse::<crate::Shortcut>() { copy = copy.key_equivalent(shortcut); }
+        let Some(menu) = link_menu::build_context_menu(link_menu::ContextMenuTarget {
+            has_link: false,
+            has_on_link: false,
+            image: None,
+            selectable: true,
+            copy_enabled: text.is_some(),
+        }) else { return false };
         log_event!(self, "selection menu {path}");
         self.host.popups.push_back(crate::popup_menu::Request {
-            menu: crate::PopupMenu::new().item(copy),
+            menu,
             anchor: crate::PopupAnchor::Point(x, y),
             on_pick: Box::new(move |_, picked, tx| {
                 if picked == Some("copy") && let Some(text) = text {
@@ -783,6 +769,7 @@ impl RuntimeCore {
             field: None,
             selection: true,
         });
+        true
     }
 }
 

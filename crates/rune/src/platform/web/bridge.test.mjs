@@ -1853,10 +1853,34 @@ test('consumer demand triggers flush the mirror and timer helpers pass attempt a
         bridge.cancelA11y(h);
         assert.equal(active.has(idleId), false, 'cancelA11y cancels pending requestIdleCallback');
 
+        timers.length = 0;
         bridge.scheduleA11yIdle(h, 6, 100);
+        const backstop6 = timers.find(t => t.kind === 'timeout');
         const idleId2 = timers.at(-1).id;
         active.get(idleId2).fn();
         assert.deepEqual(events.pop(), { kind: 'a11y_idle', attempt: 6 });
+        assert.equal(active.has(backstop6.id), false, 'firing requestIdleCallback clears its setTimeout backstop');
+
+        // Stalled requestIdleCallback (e.g. idle WebGL2 frame with no next rAF): the bounded
+        // setTimeout backstop fires a11y_idle once and cancels the stalled idle callback.
+        timers.length = 0;
+        bridge.scheduleA11yIdle(h, 7, 100);
+        const backstop = timers.find(t => t.kind === 'timeout');
+        const stalledIdle = timers.find(t => t.kind === 'idle');
+        assert.ok(backstop && stalledIdle, 'scheduleA11yIdle arms both requestIdleCallback and setTimeout backstop');
+        assert.ok(backstop.ms <= 16, `backstop fires within one 60 Hz frame, got ${backstop.ms}ms`);
+        active.get(backstop.id).fn();
+        assert.deepEqual(events.pop(), { kind: 'a11y_idle', attempt: 7 });
+        assert.equal(active.has(stalledIdle.id), false, 'backstop cancels stalled requestIdleCallback');
+
+        // cancelA11y cancels both requestIdleCallback and its setTimeout backstop.
+        timers.length = 0;
+        bridge.scheduleA11yIdle(h, 8, 100);
+        const b8 = timers.find(t => t.kind === 'timeout');
+        const i8 = timers.find(t => t.kind === 'idle');
+        bridge.cancelA11y(h);
+        assert.equal(active.has(b8.id), false, 'cancelA11y clears backstop timer');
+        assert.equal(active.has(i8.id), false, 'cancelA11y clears requestIdleCallback');
     } finally {
         globalThis.setTimeout = origSetTimeout;
         globalThis.clearTimeout = origClearTimeout;
@@ -3297,6 +3321,426 @@ test('external hidden-input blur reports field_blur, ignores window/menu/sync bl
             win.dispatchEvent({ type: 'pointerup', target: canvas, pointerType, pointerId: pid, timeStamp: 60 });
             assert.equal(canvas.style.transform, '', `${pointerType}: transform clears after pointerup`);
         }
+    } finally {
+        bridge.destroy(h);
+    }
+});
+
+test('next-frame focus reconciliation clears stale caret across transient window blur, delayed activeElement, visualViewport retract, and visibility return with zero idle rAFs', async () => {
+    const origRaf = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+    const origCancel = Object.getOwnPropertyDescriptor(globalThis, 'cancelAnimationFrame');
+    const rafQueue = [];
+    let nextRafId = 1;
+    let rafScheduled = 0;
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+        configurable: true,
+        value: cb => {
+            rafScheduled += 1;
+            const id = nextRafId++;
+            rafQueue.push({ id, cb });
+            return id;
+        },
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+        configurable: true,
+        value: id => {
+            const idx = rafQueue.findIndex(item => item.id === id);
+            if (idx >= 0) rafQueue.splice(idx, 1);
+        },
+    });
+    const flushRaf = () => {
+        const batch = rafQueue.splice(0, rafQueue.length);
+        for (const item of batch) item.cb(0);
+    };
+
+    const { doc, body, win, events, h } = setup({ coarse: true });
+    let focusedDoc = true;
+    doc.hasFocus = () => focusedDoc;
+    try {
+        await Promise.resolve();
+
+        // 1. Transient window blur + field blur -> window focus with activeElement === body.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        focusedDoc = false;
+        doc.activeElement = body;
+        h.password.dispatchEvent({ type: 'blur' });
+        win.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        assert.deepEqual(events, [], 'window blur alone does not emit field_blur');
+        focusedDoc = true;
+        win.dispatchEvent({ type: 'focus' });
+        flushRaf();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }]);
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // 2. blur fires while document.activeElement briefly still reports h.password, then settles to body before rAF.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        h.password.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        assert.deepEqual(events, [], 'microtask defers when activeElement is still h.password');
+        doc.activeElement = body;
+        flushRaf();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }]);
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // 3. visualViewport retracts to 699 after a suppressed blur left activeElement === body.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        bridge.syncVisualViewport(h, 0, 362, 699);
+        focusedDoc = false;
+        doc.activeElement = body;
+        h.password.dispatchEvent({ type: 'blur' });
+        win.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        focusedDoc = true;
+        bridge.syncVisualViewport(h, 0, 699, 699);
+        flushRaf();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }]);
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // 4. visibilitychange returning from hidden when DOM focus left h.password.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        doc.hidden = true;
+        doc.dispatchEvent({ type: 'visibilitychange' });
+        doc.activeElement = body;
+        h.password.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        assert.deepEqual(events, []);
+        doc.hidden = false;
+        doc.dispatchEvent({ type: 'visibilitychange' });
+        flushRaf();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }]);
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // 5. No blur (DOM input stays active across keyboard open/retract) keeps focus and schedules 0 rAFs.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        const rafBefore = rafScheduled;
+        bridge.syncVisualViewport(h, 0, 362, 699);
+        bridge.syncVisualViewport(h, 0, 699, 699);
+        assert.equal(rafScheduled, rafBefore, 'focused input across visualViewport resize schedules zero rAFs');
+        assert.deepEqual(events, []);
+    } finally {
+        bridge.destroy(h);
+        if (origRaf) Object.defineProperty(globalThis, 'requestAnimationFrame', origRaf);
+        else delete globalThis.requestAnimationFrame;
+        if (origCancel) Object.defineProperty(globalThis, 'cancelAnimationFrame', origCancel);
+        else delete globalThis.cancelAnimationFrame;
+    }
+});
+
+test('rapid mouse clicks reusing pointerId=1 cancel stale pointer-end fallback timer so second press keeps keyboard shift', () => {
+    const origSetTimeout = globalThis.setTimeout;
+    const origClearTimeout = globalThis.clearTimeout;
+    const timers = new Map();
+    let nextTimer = 1;
+    Object.defineProperty(globalThis, 'setTimeout', {
+        configurable: true,
+        value: (fn, _ms) => {
+            const id = nextTimer++;
+            timers.set(id, fn);
+            return id;
+        },
+    });
+    Object.defineProperty(globalThis, 'clearTimeout', {
+        configurable: true,
+        value: id => { timers.delete(id); },
+    });
+    const flushTimers = () => {
+        const batch = [...timers.entries()];
+        timers.clear();
+        for (const [, fn] of batch) fn();
+    };
+
+    const { canvas, win, h } = setup({ coarse: true });
+    try {
+        // Press 1 (mouse pointerId=1): focus bottom field, shift up, click and release.
+        bridge.sync(h, 'bottom', 'hi', 0, 2, 2, false);
+        bridge.activate(h);
+        bridge.syncCaret(h, 24, 520, 2, 24);
+        bridge.syncVisualViewport(h, 0, 362, 699);
+        assert.equal(canvas.style.transform, 'translate3d(0, -198px, 0)');
+
+        win.dispatchEvent({ type: 'pointerdown', target: canvas, pointerType: 'mouse', pointerId: 1, timeStamp: 10 });
+        win.dispatchEvent({ type: 'pointerup', target: canvas, pointerType: 'mouse', pointerId: 1, timeStamp: 20 });
+
+        // Press 2 (same mouse pointerId=1) starts BEFORE Press 1's fallback setTimeout(0) has fired.
+        // Press 2 blurs the bottom field on pointerdown -> sync('', ...) runs while pointer is held.
+        win.dispatchEvent({ type: 'pointerdown', target: canvas, pointerType: 'mouse', pointerId: 1, timeStamp: 25 });
+        bridge.sync(h, '', '', 0, 0, 0, false);
+        assert.equal(canvas.style.transform, 'translate3d(0, -198px, 0)');
+
+        // Stale timer from Press 1 fires mid-Press 2: must NOT delete Press 2's pid=1 or drop shift!
+        flushTimers();
+        assert.equal(canvas.style.transform, 'translate3d(0, -198px, 0)', 'stale timer from first press must not drop keyboard shift during second press');
+
+        // Press 2 releases: transform now clears cleanly.
+        win.dispatchEvent({ type: 'pointerup', target: canvas, pointerType: 'mouse', pointerId: 1, timeStamp: 35 });
+        assert.equal(canvas.style.transform, '');
+    } finally {
+        bridge.destroy(h);
+        Object.defineProperty(globalThis, 'setTimeout', { configurable: true, value: origSetTimeout });
+        Object.defineProperty(globalThis, 'clearTimeout', { configurable: true, value: origClearTimeout });
+    }
+});
+
+test('blur/focusout with activeElement lagging past first rAF still reconciles on trailing check, and a new focus cancels it', async () => {
+    const origRaf = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+    const origCancel = Object.getOwnPropertyDescriptor(globalThis, 'cancelAnimationFrame');
+    const origSetTimeout = globalThis.setTimeout;
+    const origClearTimeout = globalThis.clearTimeout;
+    const rafQueue = [];
+    const timers = new Map();
+    let nextId = 1;
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+        configurable: true,
+        value: cb => { const id = nextId++; rafQueue.push({ id, cb }); return id; },
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+        configurable: true,
+        value: id => { const i = rafQueue.findIndex(x => x.id === id); if (i >= 0) rafQueue.splice(i, 1); },
+    });
+    Object.defineProperty(globalThis, 'setTimeout', {
+        configurable: true,
+        value: (fn, _ms) => { const id = nextId++; timers.set(id, fn); return id; },
+    });
+    Object.defineProperty(globalThis, 'clearTimeout', {
+        configurable: true,
+        value: id => { timers.delete(id); },
+    });
+    const flushRaf = () => { for (const x of rafQueue.splice(0)) x.cb(0); };
+    const flushTimers = () => { const batch = [...timers.entries()]; timers.clear(); for (const [, fn] of batch) fn(); };
+
+    const { doc, body, events, h } = setup({ coarse: true });
+    doc.hasFocus = () => true;
+    try {
+        await Promise.resolve();
+        // 1. blur/focusout fires while activeElement lags past the first rAF, then settles to body.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        h.password.dispatchEvent({ type: 'blur' });
+        h.password.dispatchEvent({ type: 'focusout' });
+        await Promise.resolve();
+        flushRaf(); // rAF1 fires while activeElement is still h.password (e.g. 16.6ms < 20ms lag)
+        assert.deepEqual(events, []);
+        doc.activeElement = body; // activeElement settles after rAF1
+        flushTimers();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }]);
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // 2. If a new focus/activate arrives before the trailing check fires, the stale check is cancelled.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        h.password.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        flushRaf();
+        bridge.activate(h);
+        flushTimers();
+        assert.deepEqual(events, []);
+    } finally {
+        bridge.destroy(h);
+        if (origRaf) Object.defineProperty(globalThis, 'requestAnimationFrame', origRaf);
+        else delete globalThis.requestAnimationFrame;
+        if (origCancel) Object.defineProperty(globalThis, 'cancelAnimationFrame', origCancel);
+        else delete globalThis.cancelAnimationFrame;
+        Object.defineProperty(globalThis, 'setTimeout', { configurable: true, value: origSetTimeout });
+        Object.defineProperty(globalThis, 'clearTimeout', { configurable: true, value: origClearTimeout });
+    }
+});
+
+test('delayed activeElement settle at 60ms, 500ms, 2s, and 5s+input reconciles with zero idle timers and preserves protected focus', async () => {
+    const origRaf = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+    const origCancel = Object.getOwnPropertyDescriptor(globalThis, 'cancelAnimationFrame');
+    const origSetTimeout = globalThis.setTimeout;
+    const origClearTimeout = globalThis.clearTimeout;
+    let now = 0;
+    let nextId = 1;
+    const scheduled = new Map();
+    const scheduleAt = (fn, delay) => {
+        const id = nextId++;
+        scheduled.set(id, { at: now + Math.max(0, delay || 0), fn });
+        return id;
+    };
+    const cancelId = id => { scheduled.delete(id); };
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+        configurable: true,
+        value: cb => scheduleAt(() => cb(now), 16),
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+        configurable: true,
+        value: cancelId,
+    });
+    Object.defineProperty(globalThis, 'setTimeout', {
+        configurable: true,
+        value: (fn, ms) => scheduleAt(fn, ms),
+    });
+    Object.defineProperty(globalThis, 'clearTimeout', {
+        configurable: true,
+        value: cancelId,
+    });
+    const advanceTo = async targetMs => {
+        while (true) {
+            let earliest = null;
+            for (const [id, entry] of scheduled) {
+                if (entry.at <= targetMs && (!earliest || entry.at < earliest.at || (entry.at === earliest.at && id < earliest.id))) {
+                    earliest = { id, at: entry.at, fn: entry.fn };
+                }
+            }
+            if (!earliest) break;
+            scheduled.delete(earliest.id);
+            now = earliest.at;
+            earliest.fn();
+            await Promise.resolve();
+        }
+        now = Math.max(now, targetMs);
+    };
+
+    const { doc, win, body, canvas, events, h } = setup({ coarse: true });
+    doc.hasFocus = () => true;
+    try {
+        await Promise.resolve();
+        // Idle page with no focused field schedules zero timers or rAFs.
+        assert.equal(scheduled.size, 0, 'idle unfocused page schedules zero timers');
+
+        // 1. Settle at 60 ms, 500 ms, and 2,000 ms after blur/focusout.
+        for (const settleMs of [60, 500, 2000]) {
+            bridge.sync(h, 'pw', '', 0, 0, 0, true);
+            bridge.activate(h);
+            events.length = 0;
+            const start = now;
+            h.password.dispatchEvent({ type: 'blur' });
+            h.password.dispatchEvent({ type: 'focusout' });
+            await Promise.resolve();
+            // Advance just before settleMs: activeElement is still h.password -> no premature blur.
+            await advanceTo(start + settleMs - 1);
+            assert.deepEqual(events, [], `no blur before activeElement settles at ${settleMs}ms`);
+            // activeElement settles to body at settleMs.
+            await advanceTo(start + settleMs);
+            doc.activeElement = body;
+            // Reconciles within bounded back-off without any extra user event.
+            await advanceTo(start + settleMs + 1300);
+            assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }], `reconciles settle at ${settleMs}ms`);
+            assert.equal(scheduled.size, 0, `no lingering timers after ${settleMs}ms reconcile`);
+            bridge.sync(h, '', '', 0, 0, 0, false);
+        }
+
+        // 2. If iOS keeps h.password focused across the entire back-off, it never blurs and stops with 0 timers.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        const keepStart = now;
+        h.password.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        await advanceTo(keepStart + 10000);
+        assert.deepEqual(events, [], 'keeping h.password as activeElement never emits field_blur');
+        assert.equal(scheduled.size, 0, 'bounded back-off stops completely with 0 timers');
+
+        // 3. Settle arbitrarily late (5,000 ms, past the bounded back-off): caught by focusin or next user input.
+        doc.activeElement = canvas;
+        doc.dispatchEvent({ type: 'focusin', target: canvas });
+        await Promise.resolve();
+        assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }], 'document focusin catches arbitrarily late focus transfer');
+        bridge.sync(h, '', '', 0, 0, 0, false);
+
+        // And when late settle goes to body (no focusin), next user input (keydown / wheel / pointermove) catches it.
+        for (const [label, fire] of [
+            ['keydown', () => win.dispatchEvent({ type: 'keydown', target: body, key: 'Escape' })],
+            ['wheel', () => win.dispatchEvent({ type: 'wheel', target: canvas, deltaY: 10 })],
+            ['pointermove', () => win.dispatchEvent({ type: 'pointermove', target: canvas, pointerType: 'mouse', pointerId: 1 })],
+        ]) {
+            bridge.sync(h, 'pw', '', 0, 0, 0, true);
+            bridge.activate(h);
+            events.length = 0;
+            const lateStart = now;
+            h.password.dispatchEvent({ type: 'blur' });
+            await Promise.resolve();
+            await advanceTo(lateStart + 5000);
+            assert.equal(scheduled.size, 0, `back-off stopped before 5s (${label})`);
+            assert.deepEqual(events, []);
+            doc.activeElement = body;
+            fire();
+            await Promise.resolve();
+            assert.deepEqual(events, [{ kind: 'field_blur', key: 'pw' }], `5s late settle to body caught by ${label}`);
+            assert.equal(scheduled.size, 0);
+            bridge.sync(h, '', '', 0, 0, 0, false);
+        }
+
+        // 4. Protected visualViewport relayout while activeElement stays h.password schedules 0 timers and emits 0 blurs.
+        bridge.sync(h, 'pw', '', 0, 0, 0, true);
+        bridge.activate(h);
+        events.length = 0;
+        bridge.syncVisualViewport(h, 0, 362, 699);
+        bridge.syncVisualViewport(h, 0, 699, 699);
+        await Promise.resolve();
+        assert.equal(scheduled.size, 0, 'protected visualViewport resize schedules 0 timers');
+        assert.deepEqual(events, []);
+
+        // 5. In-gesture refocus cancels an active back-off immediately with 0 blurs and 0 timers.
+        const tapStart = now;
+        h.password.dispatchEvent({ type: 'blur' });
+        await Promise.resolve();
+        await advanceTo(tapStart + 60);
+        assert.ok(scheduled.size > 0, 'back-off is active before refocus');
+        bridge.activate(h);
+        assert.equal(scheduled.size, 0, 'activate() cancels active back-off immediately');
+        await advanceTo(tapStart + 5000);
+        assert.deepEqual(events, []);
+    } finally {
+        bridge.destroy(h);
+        if (origRaf) Object.defineProperty(globalThis, 'requestAnimationFrame', origRaf);
+        else delete globalThis.requestAnimationFrame;
+        if (origCancel) Object.defineProperty(globalThis, 'cancelAnimationFrame', origCancel);
+        else delete globalThis.cancelAnimationFrame;
+        Object.defineProperty(globalThis, 'setTimeout', { configurable: true, value: origSetTimeout });
+        Object.defineProperty(globalThis, 'clearTimeout', { configurable: true, value: origClearTimeout });
+    }
+});
+
+test('syncA11y mirrors ordered lists as <ol> with start attribute and preserves native list markers on <ol>/<li> while keeping <ul> list-style:none', () => {
+    const { h } = setup();
+    try {
+        bridge.syncA11y(h, JSON.stringify([
+            { k: 'group', g: 'ol', p: '#0/ord1', r: [0, 0, 200, 40] },
+            { k: 'group', g: 'li', p: '#0/ord1/i0', r: [0, 0, 200, 20], a: 0 },
+            { k: 'text', p: '#0/ord1/i0/b0', r: [20, 0, 180, 20], t: 'First', a: 1 },
+            { k: 'group', g: 'ol', p: '#0/ord3', r: [0, 50, 200, 40], st: 3 },
+            { k: 'group', g: 'li', p: '#0/ord3/i0', r: [0, 50, 200, 20], a: 3 },
+            { k: 'text', p: '#0/ord3/i0/b0', r: [20, 50, 180, 20], t: 'Third', a: 4 },
+            { k: 'group', g: 'ul', p: '#0/bul', r: [0, 100, 200, 40] },
+            { k: 'group', g: 'li', p: '#0/bul/i0', r: [0, 100, 200, 20], a: 6 },
+            { k: 'text', p: '#0/bul/i0/b0', r: [20, 100, 180, 20], t: 'Bullet', a: 7 },
+        ]));
+
+        const [ol1, ol3, ul] = h.a11y.children;
+        assert.equal(ol1.tagName, 'OL');
+        assert.equal(ol1.getAttribute('start'), null, 'default start=1 omits start attribute');
+        assert.equal(ol1.children[0].tagName, 'LI');
+        assert.ok(!ol1.style.cssText.includes('list-style:none'), '<ol> keeps native decimal marker semantics');
+        assert.ok(!ol1.children[0].style.cssText.includes('list-style:none'), '<li> inherits list-style from parent list');
+
+        assert.equal(ol3.tagName, 'OL');
+        assert.equal(ol3.getAttribute('start'), '3', 'ordered list starting at 3 sets start="3"');
+        assert.equal(ol3.children[0].tagName, 'LI');
+
+        assert.equal(ul.tagName, 'UL');
+        assert.equal(ul.getAttribute('start'), null);
+        assert.ok(ul.style.cssText.includes('list-style:none'), '<ul> keeps list-style:none');
+
+        // Patch start from 3 -> 5 -> cleared (default 1).
+        bridge.syncA11y(h, JSON.stringify({ p: 1, u: [{ k: 'group', g: 'ol', p: '#0/ord3', r: [0, 50, 200, 40], st: 5 }] }));
+        assert.equal(ol3.getAttribute('start'), '5');
+        bridge.syncA11y(h, JSON.stringify({ p: 1, u: [{ k: 'group', g: 'ol', p: '#0/ord3', r: [0, 50, 200, 40] }] }));
+        assert.equal(ol3.getAttribute('start'), null);
     } finally {
         bridge.destroy(h);
     }

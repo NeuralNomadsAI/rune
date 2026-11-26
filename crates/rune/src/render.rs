@@ -12,6 +12,7 @@ mod dxbc;
 mod effect_warm;
 mod fill;
 mod first_use;
+pub(crate) mod loss_latch;
 mod gpu_loss;
 mod instance;
 mod layers;
@@ -43,7 +44,7 @@ mod variant;
 mod vulkan_icd;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod warm_machine;
-mod warmup;
+pub(crate) mod warmup;
 #[cfg(target_os = "macos")]
 mod windfoil_metallib;
 
@@ -56,6 +57,7 @@ pub(crate) mod surface_alpha;
 pub(crate) mod translucency;
 
 pub mod cpu_boot;
+pub use loss_latch::GpuLossPolicy;
 
 #[cfg(test)]
 mod abi_tests;

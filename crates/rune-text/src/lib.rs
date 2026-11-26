@@ -35,6 +35,7 @@ mod measure;
 #[doc(hidden)]
 pub mod outline;
 mod paragraphs;
+mod positioned;
 #[doc(hidden)]
 pub mod profile;
 mod raster;
@@ -83,6 +84,8 @@ pub use fonts::full_faces::add_font;
 pub use fonts::language::set_language;
 pub use fonts::system_fonts::InstalledFamily;
 pub use fonts::system_fonts::installed_families;
+pub use fonts::system_fonts::set_system_fonts;
+pub use fonts::system_fonts::system_fonts_enabled;
 #[doc(hidden)]
 pub use icon::Facing;
 pub use icon::Icon;
@@ -231,6 +234,11 @@ pub use paragraphs::TextLayout;
 pub use paragraphs::common_end;
 pub use paragraphs::common_start;
 pub use parley;
+#[doc(hidden)]
+pub use positioned::PositionedA11yChunk;
+#[doc(hidden)]
+pub use positioned::PositionedA11yLines;
+pub use positioned::PositionedText;
 #[doc(hidden)]
 pub use raster::coretext_match;
 pub use raster::coretext_match::FontSmoothing;

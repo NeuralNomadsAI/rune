@@ -209,8 +209,7 @@ impl RuntimeCore {
             return true;
         }
         let Some(path) = self.selection_holder().map(|i| self.tree.nodes[i].path.clone()) else { return false };
-        self.push_selection_menu(app, &path, at.0, at.1);
-        true
+        self.push_selection_menu(app, &path, at.0, at.1)
     }
 }
 

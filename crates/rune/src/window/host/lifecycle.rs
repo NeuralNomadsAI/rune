@@ -411,7 +411,7 @@ impl Host {
 
     /// Brings the window on screen (`Reveal`); a window closed for good stays closed.
     pub(in crate::window) fn reveal(&mut self, event_loop: &ActiveEventLoop, reveal: Reveal, mut token: Option<String>) {
-        if self.life.finished() { return; }
+        if self.life.finished() || self.poll_gpu_loss() { return; }
         let mut built = false;
         for effect in reveal.effects(self.found()) {
             match effect {
@@ -533,6 +533,10 @@ impl Host {
     /// Applies everything other threads asked for since the last wake-up. A `wake` polls a
     /// hidden window first, so a reveal in the same turn sees what `poll` changed.
     pub(in crate::window) fn drain(&mut self, event_loop: &ActiveEventLoop, wake: bool) {
+        if self.poll_gpu_loss() {
+            self.drain_terminal(event_loop, wake);
+            return;
+        }
         let shown = self.shown_win().is_some();
         let stale_before = self.app.rt().needs_commit();
         let clipboard = self.clipboard.receive_core(self.app.rt_mut());
@@ -617,7 +621,7 @@ impl Host {
     /// polled.
     pub(in crate::window) fn poll_hidden(&mut self, event_loop: &ActiveEventLoop, shows: bool) -> bool {
         if event_loop.exiting() || self.shown_win().is_some() { return false; }
-        let changed = self.app.poll_hidden();
+        let changed = if !shows && !self.launcher() { self.app.hidden_wake() } else { self.app.poll_hidden() };
         self.clipboard.flush_core(self.app.rt_mut());
         // A show this turn minimizes after it: this poll holds the ask across its own shell, and
         // a callback's ask during that shell is the one it takes first.
@@ -654,7 +658,7 @@ impl Host {
         self.apply_tx_macos_document();
         self.show_title();
         self.apply_tx_color_scheme();
-        self.apply_tx_window_backdrop();
+        if !self.gpu_loss_failed() { self.apply_tx_window_backdrop(); }
         if self.app.rt_mut().take_toggle_maximized() && let Some(w) = self.shown_win() {
             w.toggle_maximized();
             #[cfg(target_os = "windows")]
@@ -676,7 +680,7 @@ impl Host {
         }
         // A new `Cx::set_titlebar` or `Cx::titlebar_height` resizes the caption buttons and the band
         // the frame hit-tests, and moves the traffic lights.
-        if self.app.rt_mut().take_titlebar_changed() && let Some(w) = &self.win {
+        if !self.gpu_loss_failed() && self.app.rt_mut().take_titlebar_changed() && let Some(w) = &self.win {
             sync_chrome_core(self.app.rt_mut(), w, self.chrome, self.titlebar);
             if self.app.rt().stale() { w.request_redraw(); }
         }
@@ -699,6 +703,15 @@ impl Host {
                 self.app.popup_cancel(&mut self.popup);
                 self.app.file_dialog_cancel(&mut self.file_dialog);
                 return;
+            }
+            if self.gpu_loss_failed() {
+                if self.app.rt().shell_request.is_none()
+                    && !self.app.rt().has_user_close_request()
+                    && !self.app.rt().host.minimize.field()
+                {
+                    return;
+                }
+                continue;
             }
             let paints = self.shown_win().is_some_and(|w| !self.life.covered() && !w.minimized());
             // A painting macOS window moves its frame over its next frames (`redraw`).
@@ -743,7 +756,7 @@ impl Host {
             CloseDecision::Close => self.close(event_loop),
             CloseDecision::Defer => {
                 self.shell(event_loop);
-                if self.life.finished() || event_loop.exiting() {
+                if self.life.finished() || event_loop.exiting() || self.gpu_loss_failed() {
                     return;
                 }
                 if let Some(w) = self.shown_win() {
@@ -959,6 +972,7 @@ impl Host {
     /// that releases its GPU when closed. The next `open` makes a window, a device and a surface
     /// (an app that sees `AppHandle::window_error` and the window gone can ask for one).
     pub(in crate::window) fn release(&mut self) {
+        self.assert_no_live_frame_texture();
         #[cfg(target_os = "windows")]
         self.on_resize_sync_event(crate::window::win32::resize_sync::Event::Destroy);
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
@@ -968,11 +982,12 @@ impl Host {
         }
         self.win = None;
         #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
-        self.app.rt_mut().paint.set_native_materials(false);
+        self.app.rt_mut().paint.set_windows_acrylic_materials(false);
         #[cfg(target_os = "macos")]
         self.frame_presented.reset();
         self.native_handle.native.ready.store(false, Ordering::Release);
         self.native_handle.native.number.store(0, Ordering::Release);
+        self.terminal_loss.prepare_clean_gpu_drop(self.gpu.as_ref().map(|(g, _)| g));
         self.gpu = None;
         self.app.release_compositor_gpu();
         let rt = self.app.rt_mut();
@@ -997,15 +1012,20 @@ impl Host {
     /// open can retry.
     pub(in crate::window) fn create(&mut self, event_loop: &ActiveEventLoop, token: Option<String>, focus: bool) {
         let result = self.try_create(event_loop, token, focus);
+        if let Err(ref error) = result && self.is_terminal_gpu_policy() {
+            self.latch_loss_latch(crate::render::loss_latch::GpuFailureKind::InitFailed, error.clone());
+        }
         self.finish_create(result);
     }
 
     pub(crate) fn finish_create(&mut self, result: Result<(), String>) {
         match result {
-            Ok(()) => self.shared.set_window_error(None),
+            Ok(()) => if !self.gpu_loss_failed() { self.shared.set_window_error(None); },
             Err(error) => {
                 let key = self.native_handle.key();
-                self.shared.set_window_error(Some(error.clone()));
+                if !self.gpu_loss_failed() {
+                    self.shared.set_window_error(Some(error.clone()));
+                }
                 if self.life.fail_create(self.keep_running, self.shown) {
                     self.startup_error = Some(format!("could not create the window {key}: {error}"));
                 } else {
@@ -1067,18 +1087,14 @@ impl Host {
     }
 
     fn give_back(&mut self, all: bool) {
-        {
-            let rt = self.app.rt_mut();
-            rt.text.rest();
-            rt.images.rest();
-            if let Some(rewind) = rt.motion.rewind() { rewind.rest(); }
-        }
+        self.app.rt_mut().rest();
         self.app.run_on_rest();
         if let Some((gpu, renderer)) = &mut self.gpu {
-            // Poll once (non-blocking) at idle rest only if recyclable oversized chunks are in
-            // flight so their completed buffers return before `give_back(false)` trims them;
-            // ordinary windows skip polling to avoid the 4-9 ms Iris Xe post-poll penalty.
-            if !all && renderer.has_oversized_uploads_in_flight() {
+            // Poll once (non-blocking) at idle rest on macOS (retiring completed Metal command
+            // buffers, drawables, and `Keep` texture/buffer references at zero GPU-wait cost) or
+            // when recyclable oversized chunks are in flight; ordinary Windows/Linux windows skip
+            // polling to avoid the 4-9 ms Iris Xe post-poll penalty.
+            if !all && crate::window::rest::should_poll_on_idle_rest(cfg!(target_os = "macos"), renderer.has_oversized_uploads_in_flight()) {
                 rune_gpu::health::poll(&gpu.device, wgpu::PollType::Poll).ok();
             }
             let rt = self.app.rt_mut();
@@ -1091,5 +1107,6 @@ impl Host {
                 renderer.trim_uploads();
             }
         }
+        crate::window::rest::maybe_trim_heap();
     }
 }

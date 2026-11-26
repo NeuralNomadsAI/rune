@@ -197,6 +197,12 @@ impl<S: 'static> Runtime<S> {
         core.content_height(&app)
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn measure_content(&mut self) -> (f32, f32) {
+        let (core, app) = self.split_mut();
+        core.measure_content(&app)
+    }
+
     #[inline(always)]
     pub(crate) fn set_window_origin(&mut self, origin: (f32, f32)) -> bool {
         self.core_mut().set_window_origin(origin)
@@ -611,10 +617,31 @@ impl<S: 'static> Runtime<S> {
 
     // ── Motion, live, timers, paint, clipboard, memo & URLs ────────────────────────────────────
 
+    /// Events whose handler called [`Tx::live_only`](crate::Tx::live_only) and so didn't re-run
+    /// the view, since the runtime started.
     #[inline(always)]
     pub fn live_only_events(&self) -> u64 { self.core().live_only_events() }
+
+    /// Whether debug builds check [`Tx::live_only`](crate::Tx::live_only) handlers (on by
+    /// default): a live-only event a quarter second or more after the last commit still commits,
+    /// and Rune warns when the view built something else. A test counting
+    /// [`FrameStats::commits`](crate::runtime::FrameStats::commits) turns it off; release builds never
+    /// check.
+    ///
+    /// ```
+    /// use rune::{Env, Runtime, el};
+    ///
+    /// let mut rt = Runtime::new((), |_: &(), _| el(), (200.0, 120.0), Env::new(true, 1.0));
+    /// rt.check_live_only(false);
+    /// rt.frame(0.0);
+    /// assert_eq!(rt.live_only_warnings().len(), 0);
+    /// ```
     #[inline(always)]
     pub fn check_live_only(&mut self, on: bool) { self.core_mut().check_live_only(on); }
+
+    /// The stale-view warnings debug builds have printed for
+    /// [`Tx::live_only`](crate::Tx::live_only) handlers, each naming the element and property
+    /// that differed, so a test can assert there are none. Always empty in release builds.
     #[inline(always)]
     pub fn live_only_warnings(&self) -> &[String] { self.core().live_only_warnings() }
 
@@ -680,6 +707,11 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn cancel_timer_frame(&mut self) { self.core_mut().cancel_timer_frame(); }
     #[inline(always)]
     pub(crate) fn rests(&self) -> bool { self.core().rests() }
+    /// Releases state not needed to redraw the current view, as `window::rest` does after
+    /// `REST_AFTER`.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn rest(&mut self) { self.core_mut().rest(); }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[inline(always)]

@@ -1,4 +1,6 @@
 mod button_label;
+mod closure_builders;
+mod collapsible;
 mod combobox;
 mod context_menu;
 #[allow(deprecated)]
@@ -22,9 +24,11 @@ mod keybind;
 mod kit_metrics;
 mod list_keyboard;
 mod menu_description;
+mod menu_look;
 mod menu_open;
 mod menu_submenu_keys;
 mod menu_submenu_nav;
+mod overlay_metrics;
 mod palette_seed_compat;
 mod popover_focus;
 mod popup_list;

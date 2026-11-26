@@ -98,6 +98,17 @@ enum ModalLive {
 }
 
 impl A11yTree {
+    pub(crate) fn rest(&mut self) {
+        let cap = (self.sent.len().saturating_mul(2)).max(64);
+        if self.sent.capacity() > cap { self.sent.shrink_to(cap); }
+        let sc = (self.scrollers.len().saturating_mul(2)).max(16);
+        if self.scrollers.capacity() > sc { self.scrollers.shrink_to(sc); }
+        let lf = (self.long_fields.len().saturating_mul(2)).max(16);
+        if self.long_fields.capacity() > lf { self.long_fields.shrink_to(lf); }
+        let lm = (self.live_modal.len().saturating_mul(2)).max(16);
+        if self.live_modal.capacity() > lm { self.live_modal.shrink_to(lm); }
+    }
+
     pub(super) fn is_live_muted(&self, id: AkId) -> bool {
         matches!(self.live_modal.get(&id.0), Some(ModalLive::Muted(_)))
     }
@@ -400,6 +411,7 @@ impl RuntimeCore {
             let Some(old) = tree.sent.get_mut(&id.0) else { continue };
             node.set_children(old.node.children().to_vec());
             if let Some(size) = old.node.size_of_set() { node.set_size_of_set(size); }
+            if let Some(ls) = old.node.list_style() { node.set_list_style(ls); }
             if let Some(rows) = old.node.row_count() { node.set_row_count(rows); }
             if let Some(row) = old.node.row_index() { node.set_row_index(row); }
             if old.node != node {
@@ -733,8 +745,17 @@ impl RuntimeCore {
             };
             let mut node = self.a11y_node(i, s.role, &s.walk);
             let n = &self.tree.nodes[i];
-            let parent_role = found.slots[s.walk.slot].role;
+            let parent_slot = &found.slots[s.walk.slot];
+            let parent_role = parent_slot.role;
             let is_set_item = crate::a11y::roles::ordered_set_item_in(s.role, parent_role);
+            if s.role == Role::ListItem
+                && parent_role == Role::List
+                && parent_slot.element.is_some_and(|p| {
+                    self.tree.nodes[p].a11y.more.as_deref().is_some_and(|m| m.list_start.is_some())
+                })
+            {
+                node.set_list_style(accesskit::ListStyle::Numeric);
+            }
             if let Some(list) = self.commit.virtuals.get(&n.path) {
                 if crate::a11y::roles::ordered_set(s.role) { node.set_size_of_set(list.keys.len()); }
                 if crate::a11y::roles::table_container(s.role) && node.row_count().is_none() {

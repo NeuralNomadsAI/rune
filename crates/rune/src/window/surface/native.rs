@@ -83,6 +83,8 @@ pub(in crate::window) struct Native {
     pub(in crate::window) drop_seq: crate::machine::Seq,
     /// Unregisters the window's Wayland drop target before the window's `wl_surface` drops.
     pub(in crate::window) drop_target: Option<crate::platform::wayland::drop::DropTarget>,
+    /// Unwatched Wayland press/touch serial listener guard kept while `drag_out` is mounted or active.
+    pub(in crate::window) drag_serial: Option<crate::platform::wayland::serial::wire::SerialGuard>,
     /// Per-surface Wayland behind-window blur controller, dropped strictly before `wl_surface`.
     pub(in crate::window) wayland_backdrop: Option<crate::platform::wayland::backdrop::SurfaceBlur>,
 }
@@ -116,7 +118,7 @@ pub(in crate::window) struct Native {
     /// Whether its accessibility adapter waits for the first frame (`Host::a11y_after_frame`).
     pub(in crate::window) a11y_start: A11yStart,
     /// Opt-in synchronized drag resize state and D3D11 copy-model resources (`resize_sync`).
-    pub(in crate::window) resize_sync: crate::window::win32::resize_sync::ResizeSync,
+    pub(in crate::window) resize_sync: crate::window::win32::resize_sync::DragResizeSync,
     /// Playing clips shown on their own layer under the UI (`video_layer`).
     pub(in crate::window) video_layers: crate::window::win32::video_layer::VideoLayers,
     /// Revokes the window's OLE drop target and prunes its registry entry when the window goes.

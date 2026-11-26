@@ -48,15 +48,17 @@ impl Host {
     /// modifier keys held when it hid, rather than when it next shows. A shown window's
     /// redraw delivers it, as does a hidden launcher's.
     pub(in crate::window) fn hidden_input(&mut self, event_loop: &ActiveEventLoop) {
+        if self.poll_gpu_loss() { return; }
         if !self.started || self.life.finished() || self.win.as_ref().is_some_and(|_| self.life.shown() || self.launcher()) { return; }
-        if !self.app.rt().keys_queued() { return; }
-        self.app.hidden_timer_frame();
+        if !(self.app.rt().has_input_waiting() || self.app.rt().keys_queued() || self.app.rt().drag_ends_pending()) { return; }
+        self.app.hidden_wake();
         self.clipboard.flush_core(self.app.rt_mut());
         self.shell(event_loop);
     }
 
     #[cfg(target_os = "macos")]
     pub(in crate::window) fn fn_key(&mut self) {
+        if self.poll_gpu_loss() { return; }
         let changes = {
             let Some(l) = &self.win else { return };
             let Some(changes) = l.native.fn_key.as_ref().map(|f| f.take()) else { return };
@@ -76,6 +78,7 @@ impl Host {
 
     #[cfg(target_os = "macos")]
     pub(in crate::window) fn media_keys(&mut self) {
+        if self.poll_gpu_loss() { return; }
         let Some(l) = &self.win else { return };
         let Some(events) = l.native.media_keys.as_ref().map(|m| m.take()) else { return };
         let mut redraw = false;
@@ -90,6 +93,7 @@ impl Host {
     /// sample; and, while the drag is over the window, a new sample, which redraws only when it
     /// changes the drop target. Runs even while the window is covered, as queued input does.
     pub(in crate::window) fn flush_files(&mut self, event_loop: &ActiveEventLoop) {
+        if self.poll_gpu_loss() { self.files = FileDrop::default(); return; }
         #[cfg(target_os = "macos")]
         let native = self.win.as_ref().map(|l| crate::platform::macos::drop::take(&l.window)).unwrap_or_default();
         #[cfg(target_os = "windows")]
@@ -152,6 +156,31 @@ impl Host {
 
     pub(in crate::window) fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: WakeEvent) {
         if !self.started { return; }
+        if self.poll_gpu_loss() {
+            match super::gpu_loss::classify_latched_wake_event(&event) {
+                super::gpu_loss::LatchedWakeAction::DrainApp => {
+                    self.app_woken.store(false, Ordering::Relaxed);
+                    self.drain(event_loop, true);
+                }
+                super::gpu_loss::LatchedWakeAction::CloseOrHide => {
+                    if let WakeEvent::Window(_, req) = event {
+                        self.window_request(event_loop, req);
+                        self.shell(event_loop);
+                    }
+                }
+                super::gpu_loss::LatchedWakeAction::NonGpuShell => match event {
+                    WakeEvent::Focus(_) => self.focus(event_loop),
+                    WakeEvent::Position(_, position) => self.set_position(event_loop, position),
+                    WakeEvent::Place(_, place) => self.place(event_loop, place),
+                    WakeEvent::Level(_, on) => self.set_always_on_top(event_loop, on),
+                    WakeEvent::ExcludeFromCapture(_, exclude) => self.set_exclude_from_capture(exclude),
+                    WakeEvent::ColorScheme(_, scheme) => self.set_color_scheme(scheme),
+                    _ => {}
+                },
+                super::gpu_loss::LatchedWakeAction::Drop => {}
+            }
+            return;
+        }
         // The display tick a timer's frame waits for draws that frame.
         if !matches!(event, WakeEvent::DisplayTick(_)) && let Some(w) = &mut self.win { w.timer_frame.no_longer_quiet(); }
         if !matches!(event, WakeEvent::DisplayTick(_) | WakeEvent::FrameSlot(_)) && let Some(w) = &mut self.win { w.loop_frame.touched(); }
@@ -214,6 +243,8 @@ impl Host {
             WakeEvent::ResizeSync(_) => self.handle_resize_sync_wake(),
             #[cfg(not(target_os = "windows"))]
             WakeEvent::ResizeSync(_) => {}
+            #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+            WakeEvent::MaterialPolicyChanged => {}
             WakeEvent::Reopen | WakeEvent::Turn | WakeEvent::Quit(_) | WakeEvent::QuitRequest | WakeEvent::FileDrop | WakeEvent::LayerPending | WakeEvent::AppColorScheme => {}
         }
     }
@@ -221,6 +252,7 @@ impl Host {
     /// Runs what assistive clients asked; an action or stale first activation builds or draws
     /// the frame that runs it.
     fn a11y_receive(&mut self, event_loop: &ActiveEventLoop) {
+        if self.poll_gpu_loss() { return; }
         let Some(w) = self.win.as_mut() else { return };
         let Some(adapter) = w.a11y.as_mut() else { return };
         if !adapter.receive_core(self.app.rt_mut(), self.geometry.title) { return; }
@@ -259,6 +291,19 @@ impl Host {
         }
         // A window replaying `--window-script` takes its pointer from the script alone.
         if super::window_script::drops(self.window_script.is_some(), &event) {
+            return;
+        }
+        if self.poll_gpu_loss() {
+            match super::gpu_loss::classify_latched_window_event(&event) {
+                super::gpu_loss::LatchedEvent::Close => self.close_requested(event_loop),
+                super::gpu_loss::LatchedEvent::ModifiersChanged(state) => { self.mods = state; }
+                super::gpu_loss::LatchedEvent::Keyboard => {
+                    if let WindowEvent::KeyboardInput { ref event, .. } = event {
+                        self.handle_latched_keyboard(event_loop, event);
+                    }
+                }
+                super::gpu_loss::LatchedEvent::Drop => {}
+            }
             return;
         }
         if crate::input::time::current().is_some() {
@@ -363,7 +408,7 @@ impl Host {
         };
         match event {
             WindowEvent::Moved(_) => {
-                record_reopen(&mut self.reopen, l, app.rt().host.fit_height);
+                record_reopen(&mut self.reopen, l, app.rt().host.fit_height());
                 let scale_changed = (scale - app.rt().window_scale()).abs() > f32::EPSILON;
                 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
                 if !self.wayland && !scale_changed && chrome::sync_wm_state_core(app.rt_mut(), l) {
@@ -398,7 +443,7 @@ impl Host {
             }
             WindowEvent::Resized(size) => {
                 sync_chrome_core(app.rt_mut(), l, chrome, titlebar);
-                record_reopen(&mut self.reopen, l, app.rt().host.fit_height);
+                record_reopen(&mut self.reopen, l, app.rt().host.fit_height());
                 #[cfg(target_os = "windows")]
                 let maximize_changed = {
                     let maximized = l.is_maximized();
@@ -611,6 +656,10 @@ impl Host {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if l.native.drag_serial.is_some() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 let input_scale = app.rt().input_scale();
                 let (redraw, drag_out) = cursor_moved_core(
                     app,
@@ -622,20 +671,11 @@ impl Host {
                 // Deferred mouse drags on Linux cross the drag threshold during motion while the
                 // original press serial is still current on Wayland.
                 if let Some(action) = app.rt_mut().take_titlebar_action() {
-                    l.titlebar_action(action);
+                    l.run_titlebar_action(app.rt_mut(), action);
                 }
                 // AppKit needs the drag session started inside this mouse-dragged event.
                 if let Some(start) = drag_out {
-                    let rt = app.rt();
-                    let image = self.gpu.as_ref().filter(|_| start.item.drag_image().is_none()).and_then(|(gpu, renderer)|
-                        crate::drag_out::snapshot(gpu, renderer, (l.config.width, l.config.height), scale, rt.clear_color(), start.rect));
-                    let (sink, path) = (rt.drag_end_sink(), start.path.clone());
-                    let handle = self.native_handle.clone();
-                    crate::drag_out::begin(&l.window, start, image, Box::new(move |outcome| {
-                        sink.borrow_mut().push((path, outcome));
-                        handle.send(WakeEvent::App);
-                    }));
-                    l.apply_cursor_core(rt, false);
+                    begin_host_drag_out(self.gpu.as_ref(), l, app.rt(), &self.native_handle, scale, start);
                 }
                 if redraw {
                     l.request_redraw();
@@ -648,20 +688,31 @@ impl Host {
                 l.request_redraw();
             }
             WindowEvent::Touch(touch) => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if l.native.drag_serial.is_some() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 #[cfg(target_os = "macos")]
                 if touch.phase == winit::event::TouchPhase::Started {
                     app.rt_mut().set_native_titlebar_band(mac::native_titlebar_band(&l.window));
                 }
                 app.touch(&touch);
                 if let Some(action) = app.rt_mut().take_titlebar_action() {
-                    l.titlebar_action(action);
+                    l.run_titlebar_action(app.rt_mut(), action);
                 }
                 if let Some(edge) = app.rt_mut().take_resize_action() {
                     let _ = l.drag_resize_window(edge);
                 }
+                if let Some(start) = app.rt_mut().take_drag_out() {
+                    begin_host_drag_out(self.gpu.as_ref(), l, app.rt(), &self.native_handle, scale, start);
+                }
                 l.request_redraw();
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if l.native.drag_serial.is_some() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 if state == ElementState::Pressed {
                     crate::marks::input_arrived(false);
                     self.control_click = cfg!(target_os = "macos") && self.mods.control_key();
@@ -678,7 +729,7 @@ impl Host {
                             app.rt_mut().physical_input(crate::PhysicalInput::Modifiers(map_mods(self.mods)));
                             // AppKit needs the drag started inside this mouse-down.
                             if let Some(action) = app.rt_mut().take_titlebar_action() {
-                                l.titlebar_action(action);
+                                l.run_titlebar_action(app.rt_mut(), action);
                             }
                             if let Some(edge) = app.rt_mut().take_resize_action() {
                                 let _ = l.drag_resize_window(edge);
@@ -715,6 +766,27 @@ impl Host {
             _ => {}
         }
     }
+}
+
+/// Starts an armed OS drag-out session from a pointer or touch move event.
+fn begin_host_drag_out(
+    gpu: Option<&(std::sync::Arc<crate::render::Gpu>, crate::render::Renderer)>,
+    l: &mut crate::window::surface::Win,
+    rt: &crate::runtime::RuntimeCore,
+    native_handle: &crate::window::handle::WindowHandle,
+    scale: f32,
+    start: crate::drag_out::DragOutStart,
+) {
+    let image = gpu.filter(|_| start.item.drag_image().is_none()).and_then(|(gpu, renderer)| {
+        crate::drag_out::snapshot(gpu, renderer, (l.config.width, l.config.height), scale, rt.clear_color(), start.rect)
+    });
+    let (sink, path) = (rt.drag_end_sink(), start.path.clone());
+    let handle = native_handle.clone();
+    crate::drag_out::begin(&l.window, start, image, Box::new(move |outcome| {
+        sink.borrow_mut().push((path, outcome));
+        handle.send(WakeEvent::App);
+    }));
+    l.apply_cursor_core(rt, false);
 }
 
 /// Applies a pointer move in view points, returning whether the host must request a redraw and
@@ -811,6 +883,10 @@ impl Host {
         // press changes.
         #[cfg(target_os = "windows")]
         if let Some(l) = &self.win { sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar); }
+        // A Linux frame of Rune's own takes the desktop's button layout, which the settings
+        // portal asks for this paint to show, and whether the window is maximized.
+        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+        if crate::titlebar::linux::chosen() && let Some(l) = &self.win { sync_chrome_core(self.app.rt_mut(), l, self.chrome, self.titlebar); }
         // X11 `PropertyNotify` on EWMH/GTK WM-state atoms sets a per-window flag and asks for
         // `RedrawRequested`; sync chrome only when that flag fired (zero IPC on ordinary redraws).
         #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]

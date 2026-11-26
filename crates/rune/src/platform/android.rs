@@ -48,7 +48,13 @@ pub(crate) mod touch;
 mod touch_tests;
 
 #[cfg(target_os = "android")]
-pub(crate) use host::register;
+impl<S: 'static> crate::App<S> {
+    /// On Android the activity owns the loop: `run` hands the app to `RuneView`, which starts
+    /// it in its first window and returns at once.
+    pub(crate) fn try_run_start(self) -> Result<(), crate::tooling::StartError> {
+        host::register(self).map_err(crate::tooling::StartError::Window)
+    }
+}
 
 /// winit's Android backend links its `NativeActivity` glue, which calls `android_main` when an
 /// app is started through `android.app.NativeActivity`. Rune's host is `RuneView`, so that

@@ -86,8 +86,10 @@ mod paint;
 mod paint_probe;
 mod pick;
 mod playground;
+mod rest;
+pub use rest::register_thread_rest_hook;
 mod scroll;
-mod selection;
+pub(crate) mod selection;
 mod system_settings;
 mod text_fill;
 mod turn;
@@ -134,7 +136,7 @@ use input::primary_selection;
 use input::{
     app_ime, autoscroll, capture, drop as drop_dispatch, focus, focus_machine,
     gesture as gesture_dispatch, help, hit, hover, hover_delay, key_releases, modal_focus,
-    modifier_keys, physical as physical_dispatch, popup as popup_dispatch, press_repeat, press_run,
+    modifier_keys, physical as physical_dispatch, popup as popup_dispatch, popup_fallback, press_repeat, press_run,
     titlebar, touch as touch_input,
 };
 use input::action::*;
@@ -185,6 +187,7 @@ pub(crate) use selection::selectable;
 pub(crate) use selection::selectable::touch_ui;
 pub use selection::selectable::{SelectedText, SelectionChange, TextSelection};
 pub use selection::field_lines::TextLine;
+pub use selection::image_menu::ImageMenu;
 pub use selection::text_marks::TextMark;
 use selection::{caret, click as input_click, links, select_all, text_marks};
 
@@ -207,9 +210,14 @@ pub(crate) use turn::intersect;
 use turn::{Turn, compose_turn, open_turned_layer, screen_clip_of};
 pub(crate) use types::{AnimSource, Node};
 pub use types::{FrameStats, TitlebarAction};
-use types::{AxisScroll, GlideTo, Inh, NodeCold, RowLayout, ScaleMotion, ScrollState, Stack, WidthHold, XMotion};
+use paint::inh::{Inh, InhCold, ScaleMotion};
+use types::{AxisScroll, GlideTo, NodeCold, RowLayout, ScrollState, Stack, WidthHold, XMotion};
 pub(crate) use window_requests::HostState;
 
+#[cfg(test)]
+mod hidden_wake_tests;
+#[cfg(test)]
+mod poll_after_handlers_tests;
 #[cfg(test)]
 mod timer_wake_tests;
 #[cfg(test)]
@@ -298,7 +306,15 @@ macro_rules! runtime_core_fields {
             )*
             pub(crate) _core_end: CoreEnd,
             pub state: S,
-            /// Called at the start of every frame with the clock; return true when state changed (new data).
+            /// Called at the start of every frame with the clock (unless a resting timer's poll
+            /// already stood for it) so background data and timers can update the tree before
+            /// input routes. Queued input and event handlers then run; whenever a non-`live_only`
+            /// handler runs, `poll` runs again at the same frame clock before the view commits,
+            /// alternating with any input `poll` itself queues (`Tx::send_key`) up to 4 follow-up
+            /// rounds so work queued in a turn never waits for the next mouse move or wake. Idle
+            /// frames, animation-only frames, `Tx::live_only` handlers, layout observers, and apps
+            /// without `poll` run no extra poll; call `Tx::request_poll` from a `live_only` handler
+            /// or outside a frame when one is still needed. Return true when state changed.
             pub poll: Option<fn(&mut S, f64, &mut Tx) -> bool>,
             /// Called for keys unhandled by the focused control; return true to consume it.
             pub on_key: Option<fn(&mut S, &KeyEvent, &mut Tx) -> bool>,

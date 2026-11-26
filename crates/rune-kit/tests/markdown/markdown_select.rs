@@ -232,13 +232,16 @@ fn a_quote_with_paragraphs_a_list_and_code_copies_as_plain_text() {
         Some("Before.\n\nFirst para here.\n\nSecond para.\n\n- one\n- two\n  - nested\n\n1. first\n2. second\n\nlet a = 1;\nlet b = 2;\n\nAfter."),
     );
 
-    // One item alone copies without its marker, and a drag from inside an item leaves it off.
+    // One whole item alone keeps its marker; a partial slice or a drag from inside an item leaves it off.
     rt.pointer_down(470.0, 790.0);
     rt.pointer_up(470.0, 790.0);
     rt.frame(1.0);
     let two = glyphs(&rt, "m0/b1/#1/b2/i1/#1/b0");
     drag(&mut rt, (two[0].0 - 1.0, two[0].1), (two[2].0 + 3.0, two[2].1));
-    assert_eq!(rt.selected_text().as_deref(), Some("two"));
+    assert_eq!(rt.selected_text().as_deref(), Some("- two"));
+    rt.frame(1.0);
+    drag(&mut rt, (two[0].0 - 1.0, two[0].1), (two[1].0 + 2.0, two[1].1));
+    assert_eq!(rt.selected_text().as_deref(), Some("tw"));
     rt.frame(1.0);
     let one = glyphs(&rt, "m0/b1/#1/b2/i0/#1/b0");
     drag(&mut rt, before(one[1]), (two[2].0 + 3.0, two[2].1));
@@ -248,4 +251,24 @@ fn a_quote_with_paragraphs_a_list_and_code_copies_as_plain_text() {
 /// A double-click's word as selected: on Windows with the space after it (`selectable::with_trailing_space`).
 fn w(word: &str) -> String {
     if cfg!(target_os = "windows") { format!("{word} ") } else { word.to_owned() }
+}
+
+#[test]
+fn a_drag_inside_a_markdown_link_selects_without_opening_while_a_click_opens() {
+    let mut rt = runtime_with(&["see [open the full report](https://example.com/report) now"], true);
+    let link = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("https://example.com/report")).expect("markdown link");
+    let y = link.rect[1] + link.rect[3] * 0.5;
+    let p20 = (link.rect[0] + link.rect[2] * 0.2, y);
+    let p70 = (link.rect[0] + link.rect[2] * 0.7, y);
+
+    drag(&mut rt, p20, p70);
+    assert!(rt.state.opened.is_empty(), "drag inside Markdown link must not fire on_link: {:?}", rt.state.opened);
+    assert!(rt.selected_text().is_some_and(|s| !s.is_empty()), "drag inside Markdown link selects text");
+
+    rt.frame(1.0);
+    rt.pointer_move(p20.0, p20.1);
+    rt.pointer_down(p20.0, p20.1);
+    rt.pointer_up(p20.0, p20.1);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.opened, ["https://example.com/report"], "plain click on Markdown link still opens it");
 }

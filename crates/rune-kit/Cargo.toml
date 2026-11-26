@@ -74,6 +74,10 @@ required-features = ["markdown", "frame-profile"]
 name = "layout_text_cost"
 required-features = ["markdown", "frame-profile"]
 
+[[example]]
+name = "markdown_large_bench"
+required-features = ["markdown"]
+
 [dev-dependencies]
 rune = { workspace = true, default-features = true }
 procwatch = { workspace = true }
@@ -92,6 +96,10 @@ name = "integration"
 
 [[test]]
 name = "markdown"
+required-features = ["markdown"]
+
+[[test]]
+name = "rest_memory"
 required-features = ["markdown"]
 
 [[test]]

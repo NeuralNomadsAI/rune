@@ -165,9 +165,34 @@ pub(crate) enum LossAction {
     PauseForRestore,
     /// Show the fatal GPU-lost message and exit the loop.
     Fatal,
+    /// `GpuLossPolicy::Terminal`: keep the page and canvas alive in the DOM, drop the GPU side,
+    /// refuse CPU fallback and WebGL2 restore, publish `window_error`, and wake `poll` once.
+    TerminalLatch,
 }
 
-/// Decides how the web host responds when the GPU device or WebGL2 context is lost.
+/// Whether the `webglcontextlost` listener should call `event.preventDefault()` so the browser
+/// can later fire `webglcontextrestored`.
+pub(crate) const fn webgl_prevent_default(policy: crate::GpuLossPolicy) -> bool {
+    !matches!(policy, crate::GpuLossPolicy::Terminal)
+}
+
+/// Decides how the web host responds when the GPU device or WebGL2 context is lost under
+/// `policy`.
+pub(crate) fn loss_action_for_policy(
+    policy: crate::GpuLossPolicy,
+    is_webgl: bool,
+    gpu_first: bool,
+    embedded: bool,
+    document: bool,
+) -> LossAction {
+    if matches!(policy, crate::GpuLossPolicy::Terminal) {
+        return LossAction::TerminalLatch;
+    }
+    loss_action(is_webgl, gpu_first, embedded, document)
+}
+
+/// Decides how the web host responds when the GPU device or WebGL2 context is lost under the
+/// default `GpuLossPolicy::Recover` policy.
 ///
 /// WebGPU loss preserves the existing policy: permanent CPU fallback on CPU-first pages and
 /// fatal on GPU-first pages. WebGL2 context loss is recoverable when `webglcontextrestored`
@@ -195,6 +220,7 @@ pub(crate) enum WebDrawKind {
     HandingOver { waiting_for_gpu: bool },
     Gpu,
     ContextLost,
+    TerminalFailed,
     Moving,
 }
 
@@ -211,6 +237,7 @@ pub(crate) fn web_frame_gate(
             draw,
             WebDrawKind::HandingOver { waiting_for_gpu: true }
                 | WebDrawKind::ContextLost
+                | WebDrawKind::TerminalFailed
                 | WebDrawKind::Moving
         )
     {
@@ -220,6 +247,21 @@ pub(crate) fn web_frame_gate(
     } else {
         crate::frame::host_step::Gate::Draw
     }
+}
+
+/// Whether a web wake (due timer or app wake) runs `covered_wake` directly instead of calling
+/// `request_redraw`: browsers pause `requestAnimationFrame` while a tab is hidden, and a
+/// zero-size suspended canvas skips drawing in [`web_frame_gate`].
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn web_wake_covered(hidden: bool, suspended: bool) -> bool {
+    hidden || suspended
+}
+
+/// Next timer wait target on the web while hidden or suspended: floors overdue/zero timers by
+/// one frame interval after `polled_at` so `wake_after(Duration::ZERO)` never spins.
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn web_hidden_timer_target(deadline: f64, polled_at: f64) -> f64 {
+    deadline.max(polled_at + crate::window::TIMER_FRAME.as_secs_f64())
 }
 
 /// Whether a presented GPU frame can be recorded in [`crate::window::Presented`] so a later

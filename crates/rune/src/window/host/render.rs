@@ -196,6 +196,7 @@ impl FrameProfile {
         let _ = (host, animating, next_tick);
     }
 
+    #[cfg(any(target_os = "windows", feature = "frame-profile"))]
     #[inline]
     pub(in crate::window) fn flush_core(
         &mut self,
@@ -337,6 +338,7 @@ pub(super) fn render_window_frame(
     profile: &mut FrameProfile,
     info: &StepInfo,
 ) -> bool {
+    if host.poll_gpu_loss() { return false; }
     let (Some(l), Some((gpu, renderer))) = (host.win.as_mut(), host.gpu.as_mut()) else { return false };
     let target = l.alpha.as_ref().map_or(&prepared.view, |a| &a.view);
     let comp_animating = if host.app.has_compositor() {
@@ -369,13 +371,14 @@ pub(super) fn render_window_frame(
     crate::window::surface::corners::draw(l.corners.as_ref(), &mut prepared.encoder, target, corners);
     if let Some(alpha) = &l.alpha { alpha.draw(&mut prepared.encoder, &prepared.view); }
     profile.mark_encoded();
+    if host.poll_device_for_terminal_loss() { return false; }
     comp_animating
 }
 
 #[allow(unsafe_code)]
 pub(super) fn submit_and_present_window(
     host: &mut Host,
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))] mut prepared: PreparedWindowFrame,
+    prepared: PreparedWindowFrame,
     looped: Option<&Vec<u32>>,
     profile: &mut FrameProfile,
     encoded: &mut Option<Instant>,
@@ -389,12 +392,53 @@ pub(super) fn submit_and_present_window(
     let waits = host.launcher() || !host.life.shown() || std::env::var_os("RUNE_FIRST_FRAME_WAITS").is_some();
     #[cfg(not(target_os = "macos"))]
     let waits = true;
-    let (Some(l), Some((gpu, renderer))) = (host.win.as_mut(), host.gpu.as_mut()) else {
+    // Unpack so `frame` (the live `wgpu::SurfaceTexture`) can always be dropped BEFORE any
+    // terminal surface/GPU teardown runs (`note_frame_texture_released`).
+    let PreparedWindowFrame {
+        frame,
+        view,
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        mut encoder,
+        #[cfg(target_os = "windows")]
+        present_rect,
+        ..
+    } = prepared;
+    if host.poll_device_for_terminal_loss() || host.gpu.as_ref().is_none_or(|(gpu, _)| gpu.is_lost()) {
+        drop((encoder, view, frame));
+        host.note_frame_texture_released();
+        return crate::time::now();
+    }
+    #[cfg(target_os = "linux")]
+    let readback = {
+        let (Some(l), Some((gpu, _))) = (host.win.as_mut(), host.gpu.as_mut()) else {
+            drop((encoder, view, frame));
+            host.note_frame_texture_released();
+            return crate::time::now();
+        };
+        crate::window::linux::handover::readback(l, gpu, &mut encoder, &frame)
+    };
+    let Some((gpu, renderer)) = host.gpu.as_mut() else {
+        drop((encoder, view, frame));
+        host.note_frame_texture_released();
         return crate::time::now();
     };
-    #[cfg(target_os = "linux")]
-    let readback = crate::window::linux::handover::readback(l, gpu, &mut prepared.encoder, &prepared.frame);
-    renderer.submit(&gpu.queue, prepared.encoder);
+    renderer.submit(&gpu.queue, encoder);
+    // Drop the view before checking/presenting; never call `pre_present_notify()` (which arms an
+    // unfulfillable Wayland frame callback) or `queue.present()` on a lost/latched device under
+    // either `Terminal` or `Recover`.
+    drop(view);
+    let terminal_lost = host.poll_device_for_terminal_loss();
+    let gpu_lost = host.gpu.as_ref().is_none_or(|(gpu, _)| gpu.is_lost());
+    if !crate::render::loss_latch::should_present_after_submit(gpu_lost, terminal_lost) {
+        drop(frame);
+        host.note_frame_texture_released();
+        return crate::time::now();
+    }
+    let (Some(l), Some((gpu, _))) = (host.win.as_mut(), host.gpu.as_mut()) else {
+        drop(frame);
+        host.note_frame_texture_released();
+        return crate::time::now();
+    };
     profile.mark_submitted();
     crate::marks::mark_once(&FIRST_ENCODED, "frame.first.encoded");
     *encoded = host.frame_reports.stamp();
@@ -402,23 +446,15 @@ pub(super) fn submit_and_present_window(
     #[cfg(target_os = "macos")]
     {
         let (draws, scale) = crate::system_material::present_draws(host.app.rt());
-        l.native.materials.present(draws, scale, || gpu.queue.present(prepared.frame));
+        l.native.materials.present(draws, scale, || gpu.queue.present(frame));
     }
     #[cfg(target_os = "windows")]
-    if let (Some(rects), Some(surface)) = (&prepared.present_rect, l.surface.as_ref())
+    if let (Some(rects), Some(surface)) = (&present_rect, l.surface.as_ref())
         // SAFETY: only names the rectangles the next present changed.
         && let Some(hal) = unsafe { surface.as_hal::<wgpu::hal::api::Dx12>() } {
         let rects: Vec<_> = rects.iter().map(|&[left, top, right, bottom]| windows::Win32::Foundation::RECT { left, top, right, bottom }).collect();
         hal.set_present_rects(&rects);
     }
-    #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
-    let materials_ok = {
-        let rt = host.app.rt();
-        let (draws, _) = crate::system_material::present_draws(rt);
-        let dark = rt.env.system_dark;
-        let native = &mut l.native;
-        native.materials.sync_before_present(draws, dark, native.mode.handover_mut())
-    };
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
     if host.wayland && let Some(blur) = l.native.wayland_backdrop.as_mut() {
         let rt = host.app.rt();
@@ -433,11 +469,26 @@ pub(super) fn submit_and_present_window(
             false,
         );
     }
-    #[cfg(not(target_os = "macos"))]
-    gpu.queue.present(prepared.frame);
+    #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+    let materials_ok = {
+        let rt = host.app.rt();
+        let draws = crate::system_material::windows_present_draws(rt);
+        let dark = rt.env.system_dark;
+        let native = &mut l.native;
+        native.materials.present(draws, dark, native.mode.handover_mut(), || {
+            gpu.queue.present(frame);
+        })
+    };
+    #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "windows-system-material"))))]
+    gpu.queue.present(frame);
+    // `frame` has been consumed by `queue.present`: mark released before any post-present polls.
+    host.note_frame_texture_released();
+    let (Some(l), Some((gpu, renderer))) = (host.win.as_mut(), host.gpu.as_mut()) else {
+        return crate::time::now();
+    };
     #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
     if !materials_ok {
-        host.app.rt_mut().paint.set_native_materials(false);
+        host.app.rt_mut().paint.set_windows_acrylic_materials(false);
         l.request_redraw();
     }
     // A window that opened on the CPU is the GPU's from this frame (`linux::handover`).
@@ -507,7 +558,7 @@ pub(super) fn submit_and_present_window(
         info.animating,
         looped,
         #[cfg(target_os = "windows")]
-        prepared.present_rect,
+        present_rect,
     );
     #[cfg(not(feature = "frame-profile"))]
     let _ = (looped, info);

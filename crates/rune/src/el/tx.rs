@@ -60,6 +60,8 @@ pub struct Tx {
     /// The viewport moved only because the window's own resize animation stepped it.
     pub(crate) window_step: bool,
     pub(crate) copy: Option<crate::ClipboardWrite>,
+    pub(crate) copy_image_callback: Option<CopyImageCallback>,
+    pub(crate) superseded_copy_images: Vec<CopyImageCallback>,
     pub(crate) paste: bool,
     pub(crate) clipboard_reads: Vec<ClipboardRead>,
     pub(crate) pick_reads: Vec<PickRead>,
@@ -82,6 +84,9 @@ pub struct Tx {
     /// Elements to hold where they show across this commit (`Tx::keep_on_screen`).
     pub(crate) keep_on_screen: Vec<String>,
     pub(crate) wakes: Vec<std::time::Duration>,
+    /// `Tx::request_poll`: asks for another `poll` round in this frame (or a wake on the next
+    /// turn when called outside a frame, such as from `AppHandle::update`).
+    pub(crate) request_poll: bool,
     pub(crate) shell: Option<Shell>,
     /// User-initiated close request (macOS unhandled ⌘W / Window › Close, assistive activation of
     /// the custom caption close button): routes through `App::on_close_request` instead of
@@ -120,6 +125,11 @@ pub struct Tx {
     /// A handler in this transaction opened a new fallback field menu (`App::on_field_menu`),
     /// superseding any earlier action's stale `field_menu_resolution` in the same frame.
     pub(crate) field_menu_opened: bool,
+    /// `Tx::resolve_popup_menu`: `Some(Some(id))` picks an item, `Some(None)` dismisses.
+    pub(crate) popup_menu_resolution: Option<Option<String>>,
+    /// A handler in this transaction opened a new fallback popup menu (`App::on_popup_menu`),
+    /// superseding any earlier action's stale `popup_menu_resolution` in the same frame.
+    pub(crate) popup_menu_opened: bool,
     pub(crate) file_dialogs: Vec<crate::file_dialog::Call>,
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The mouse button driving this press or drag (`Tx::button`).
@@ -385,7 +395,7 @@ impl Tx {
     /// or a text flight. A `wake_after` only schedules.
     pub(crate) fn frame_work(&self) -> bool {
         !self.pick_reads.is_empty() || !self.scroll_to.is_empty() || !self.scroll_bottom.is_empty() || !self.scroll_pages.is_empty() || !self.scroll_offsets.is_empty()
-            || !self.scroll_stops.is_empty() || !self.keep_on_screen.is_empty() || !self.text_flights.is_empty() || !self.launches.is_empty() || !self.haptics.is_empty() || self.select.is_some() || self.field_menu_resolution.is_some()
+            || !self.scroll_stops.is_empty() || !self.keep_on_screen.is_empty() || !self.text_flights.is_empty() || !self.launches.is_empty() || !self.haptics.is_empty() || self.select.is_some() || self.field_menu_resolution.is_some() || self.popup_menu_resolution.is_some()
     }
 
     /// An app marker on the next frame, e.g. `tx.trace_event(format_args!("lab:{step:?}"))`.
@@ -417,6 +427,37 @@ impl Tx {
         #[cfg(feature = "frame-profile")]
         crate::frame::live_log::waker(std::panic::Location::caller(), duration);
         self.wakes.push(duration);
+    }
+
+    /// Ask for `poll` to run again for work queued in state.
+    ///
+    /// Called during a frame (from a handler—including a [`Tx::live_only`] handler—or from
+    /// `poll`), this runs one more round of that same frame's `poll` loop before the view
+    /// commits (bounded by `MAX_POLL_ROUNDS` = 4). Called outside a frame (such as from
+    /// [`AppHandle::update`](crate::AppHandle::update)), this schedules a poll on the next turn.
+    /// Ordinary non-`live_only` handlers already trigger a same-frame follow-up `poll`
+    /// automatically and do not need to call this.
+    ///
+    /// ```no_run
+    /// use rune::{El, Tx, el};
+    ///
+    /// struct State { dirty_query: bool }
+    ///
+    /// fn row() -> El {
+    ///     el().on_hover_change(|s: &mut State, inside, tx: &mut Tx| {
+    ///         tx.live_only();
+    ///         if inside {
+    ///             s.dirty_query = true;
+    ///             tx.request_poll();
+    ///         }
+    ///     })
+    /// }
+    /// ```
+    #[cfg_attr(feature = "frame-profile", track_caller)]
+    pub fn request_poll(&mut self) {
+        #[cfg(feature = "frame-profile")]
+        crate::frame::live_log::waker(std::panic::Location::caller(), std::time::Duration::ZERO);
+        self.request_poll = true;
     }
 
     /// The window's logical clock in seconds as this handler or poll runs: the `clock` `poll`
@@ -962,9 +1003,11 @@ impl Tx {
     /// commit. Debug builds look for that: a live-only event a quarter second or more after
     /// the last commit still re-runs the view, and if the elements, layout, text or colours
     /// it builds differ from what's on screen, Rune prints the handler that said `live_only`.
-    /// This is a heuristic, not a state-mutation check: a view that reads a clock or other
-    /// external state can also differ. Use [`Runtime::check_live_only`](crate::Runtime::check_live_only)
-    /// to turn it off for such a view. It does no checking in release builds.
+    /// This self-check increments [`FrameStats::commits`](crate::runtime::FrameStats::commits) in debug
+    /// builds (release builds never check), so a test counting commits should turn it off with
+    /// [`Runtime::check_live_only`](crate::Runtime::check_live_only)`(false)`. It is a heuristic,
+    /// not a state-mutation check: a view that reads a clock or other external state can also
+    /// differ.
     pub fn live_only(&mut self) {
         self.live_only = true;
     }

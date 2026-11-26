@@ -219,7 +219,8 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
         hoverLink: null, hoverLinkLeave: null, hoverClientX: NaN, hoverClientY: NaN,
         forwarding: false, pendingLinkDrag: null, suppressLinkClickUntil: 0,
         lastScrollAt: 0, staticTimer: 0, scrollEls: new Map(), band, mediaKeys: false,
-        visualViewport: null, keyboardShiftY: 0, pendingFieldBlur: false, pressedPointers: new Set(),
+        visualViewport: null, keyboardShiftY: 0, pendingFieldBlur: false, domFocused: false, focusGen: 0, reconcileRaf: 0, reconcileTimer: 0, reconcileFollowUp: false,
+        pressedPointers: new Map(), pointerEndTimers: new Map(), pointerGen: 0,
         pointerLocked: false, pointerLockPending: false, pointerLockSeq: 0, pointerLockHasPromise: false, pointerLockCalling: false, pointerLockSyncError: false, pointerLockUnadjustedFailed: false };
     // `after` runs once the event has reached Rust (or was dropped), even when it is deferred.
     const send = (event, after) => {
@@ -262,39 +263,160 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
             if (h.touchTimestamps.length > MAX_TOUCH_TIMESTAMPS) h.touchTimestamps.shift();
         }
     };
+    const clearPointerEndTimer = pid => {
+        const id = h.pointerEndTimers.get(pid);
+        if (id) {
+            clearTimeout(id);
+            h.pointerEndTimers.delete(pid);
+        }
+    };
+    const clearAllPointerEndTimers = () => {
+        for (const id of h.pointerEndTimers.values()) clearTimeout(id);
+        h.pointerEndTimers.clear();
+    };
+    h.clearAllPointerEndTimers = clearAllPointerEndTimers;
     listen(window, 'pointerdown', event => {
         if (ownsTarget(event.target) && typeof event.pointerId === 'number') {
-            h.pressedPointers.add(event.pointerId);
+            clearPointerEndTimer(event.pointerId);
+            h.pressedPointers.set(event.pointerId, ++h.pointerGen);
         }
         if (event.target === canvas && event.pointerType === 'touch' && h.activeTouchId === null) {
             h.activeTouchId = event.pointerId;
         }
         recordTouchTimestamp(false, event);
     }, { capture: true, passive: true });
-    listen(window, 'pointermove', event => recordTouchTimestamp(true, event), { capture: true, passive: true });
-    const checkFieldBlur = () => {
-        if (h.disposed || h.syncing || !h.pendingFieldBlur) return;
-        if (h.activeTouchId !== null || h.pressedPointers.size > 0) return;
-        h.pendingFieldBlur = false;
-        if (!h.key || typeof h.menu?.done === 'function') return;
-        if (document.activeElement === h.field) return;
-        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
-        if (document.hidden) return;
-        send({ kind: 'field_blur', key: h.key });
+    const RECONCILE_BACKOFF_MS = [40, 120, 400, 1200, 1200];
+    const cancelReconcile = () => {
+        if (h.reconcileRaf) {
+            if (typeof globalThis.cancelAnimationFrame === 'function') globalThis.cancelAnimationFrame(h.reconcileRaf);
+            else clearTimeout(h.reconcileRaf);
+            h.reconcileRaf = 0;
+        }
+        if (h.reconcileTimer) {
+            clearTimeout(h.reconcileTimer);
+            h.reconcileTimer = 0;
+        }
+        h.reconcileFollowUp = false;
     };
-    const finishPointer = pid => {
-        if (!h.pressedPointers.delete(pid) || h.disposed) return;
+    const reconcileFocus = (clearPending = false) => {
+        if (h.disposed || h.syncing) return false;
+        if (h.activeTouchId !== null || h.pressedPointers.size > 0) return false;
+        if (clearPending) h.pendingFieldBlur = false;
+        if (!h.key || !h.domFocused || typeof h.menu?.done === 'function') return false;
+        if (document.activeElement === h.field) return false;
+        if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+        if (document.hidden) return false;
+        h.pendingFieldBlur = false;
+        h.domFocused = false;
+        cancelReconcile();
+        send({ kind: 'field_blur', key: h.key });
+        return true;
+    };
+    // Bounded reconciliation after blur, focusout, focusin, window focus, visibility return, or
+    // visualViewport resize so event-order races (delayed activeElement settlement, transient
+    // window blur during keyboard hide, or visualViewport retraction after a suppressed blur)
+    // clear a stale caret without adding any idle timer or frame loop. Tagged with focusGen so a
+    // newer focus cancels any stale check. When followUp is true (blur/focusout fired while
+    // activeElement was still h.field), a short bounded back-off checks at next rAF, +40, +120,
+    // +400, +1200, and +1200 ms (~3 s total) and then stops; document focusin and subsequent user
+    // input (keydown/wheel/pointermove/pointerup) catch arbitrarily late settles at zero idle cost.
+    const scheduleReconcile = (followUp = false) => {
+        if (h.disposed || !h.key || !h.domFocused) return;
+        if (followUp) h.reconcileFollowUp = true;
+        if (h.reconcileRaf) return;
+        if (h.reconcileTimer) {
+            if (document.activeElement === h.field) return;
+            clearTimeout(h.reconcileTimer);
+            h.reconcileTimer = 0;
+        }
+        const gen = h.focusGen;
+        const scheduleBackoff = idx => {
+            if (idx >= RECONCILE_BACKOFF_MS.length || h.disposed || gen !== h.focusGen) {
+                h.pendingFieldBlur = false;
+                h.reconcileFollowUp = false;
+                return;
+            }
+            if (!h.key || !h.domFocused || document.activeElement !== h.field) {
+                reconcileFocus(true);
+                return;
+            }
+            h.reconcileTimer = setTimeout(() => {
+                h.reconcileTimer = 0;
+                if (h.disposed || gen !== h.focusGen) return;
+                const last = idx + 1 >= RECONCILE_BACKOFF_MS.length;
+                if (reconcileFocus(last)) return;
+                if (!last && h.reconcileFollowUp && h.key && h.domFocused && document.activeElement === h.field) {
+                    scheduleBackoff(idx + 1);
+                } else {
+                    h.pendingFieldBlur = false;
+                    h.reconcileFollowUp = false;
+                }
+            }, RECONCILE_BACKOFF_MS[idx]);
+        };
+        const run = () => {
+            h.reconcileRaf = 0;
+            if (h.disposed || gen !== h.focusGen) return;
+            const more = h.reconcileFollowUp;
+            if (reconcileFocus(!more)) return;
+            if (more && !h.disposed && gen === h.focusGen && h.key && h.domFocused && document.activeElement === h.field) {
+                scheduleBackoff(0);
+            } else {
+                h.pendingFieldBlur = false;
+                h.reconcileFollowUp = false;
+            }
+        };
+        if (typeof globalThis.requestAnimationFrame === 'function') {
+            h.reconcileRaf = globalThis.requestAnimationFrame(run);
+        } else {
+            h.reconcileRaf = setTimeout(run, 0);
+        }
+    };
+    h.cancelReconcile = cancelReconcile;
+    h.scheduleReconcile = scheduleReconcile;
+    const checkFieldBlur = () => {
+        if (!h.pendingFieldBlur) return;
+        if (!reconcileFocus(false)) scheduleReconcile(true);
+    };
+    const reconcileOnActivity = () => {
+        if (h.disposed || h.syncing || !h.key || !h.domFocused || typeof h.menu?.done === 'function') return;
+        if (document.activeElement === h.field) return;
+        reconcileFocus(false);
+    };
+    listen(document, 'focusin', event => {
+        if (h.disposed || h.syncing || !h.key || !h.domFocused || typeof h.menu?.done === 'function') return;
+        if (event.target === h.field) return;
+        h.pendingFieldBlur = true;
+        queueMicrotask(checkFieldBlur);
+    });
+    listen(window, 'keydown', reconcileOnActivity, { capture: true, passive: true });
+    listen(window, 'wheel', reconcileOnActivity, { capture: true, passive: true });
+    listen(window, 'pointermove', event => {
+        recordTouchTimestamp(true, event);
+        reconcileOnActivity();
+    }, { capture: true, passive: true });
+    const finishPointer = (pid, gen) => {
+        if (gen === undefined || h.pressedPointers.get(pid) !== gen) return;
+        clearPointerEndTimer(pid);
+        h.pressedPointers.delete(pid);
+        if (h.disposed) return;
         if (h.pressedPointers.size === 0) applyKeyboardShift(h);
         if (h.pendingFieldBlur) queueMicrotask(checkFieldBlur);
+        else if (h.key && h.domFocused && document.activeElement !== h.field) queueMicrotask(reconcileOnActivity);
     };
     const capturePointerEnd = event => {
         const pid = event.pointerId;
         if (event.pointerType === 'touch' && pid === h.activeTouchId) {
             h.activeTouchId = null;
         }
-        // Fallback if a page listener stops propagation before window bubble phase runs.
-        if (typeof pid === 'number' && h.pressedPointers.has(pid)) {
-            setTimeout(() => finishPointer(pid), 0);
+        // Fallback if a page listener stops propagation before window bubble phase runs;
+        // tagged with this press's generation and cancelled on bubblePointerEnd or a new press.
+        const gen = typeof pid === 'number' ? h.pressedPointers.get(pid) : undefined;
+        if (gen !== undefined) {
+            clearPointerEndTimer(pid);
+            h.pointerEndTimers.set(pid, setTimeout(() => {
+                h.pointerEndTimers.delete(pid);
+                finishPointer(pid, gen);
+            }, 0));
         } else if (h.pendingFieldBlur) {
             queueMicrotask(checkFieldBlur);
         }
@@ -304,7 +426,8 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
     // canvas has already read offsetX/offsetY and completed the press. (A microtask queued from
     // capture phase runs at the per-listener microtask checkpoint BEFORE canvas's listener.)
     const bubblePointerEnd = event => {
-        if (typeof event.pointerId === 'number') finishPointer(event.pointerId);
+        const pid = event.pointerId;
+        if (typeof pid === 'number') finishPointer(pid, h.pressedPointers.get(pid));
     };
     listen(window, 'pointerup', capturePointerEnd, { capture: true, passive: true });
     listen(window, 'pointercancel', capturePointerEnd, { capture: true, passive: true });
@@ -318,8 +441,15 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
     listen(window, 'keyup', event => {
         if (event.target === canvas && MOD_KEYS.includes(event.key)) syncMods(event);
     }, { passive: true });
-    listen(window, 'blur', () => { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; h.pressedPointers.clear(); applyKeyboardShift(h); disarmLink(h); });
-    listen(document, 'visibilitychange', () => { if (document.hidden) { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; h.pressedPointers.clear(); applyKeyboardShift(h); disarmLink(h); } });
+    listen(window, 'blur', () => { h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; clearAllPointerEndTimers(); h.pressedPointers.clear(); applyKeyboardShift(h); disarmLink(h); });
+    listen(window, 'focus', () => { if (h.key && h.domFocused && document.activeElement !== h.field) scheduleReconcile(false); });
+    listen(document, 'visibilitychange', () => {
+        if (document.hidden) {
+            h.modBits = 0; h.activeTouchId = null; h.a11yTouchId = null; h.pendingLinkDrag = null; h.pendingFieldBlur = false; clearAllPointerEndTimers(); h.pressedPointers.clear(); applyKeyboardShift(h); disarmLink(h);
+        } else if (h.key && h.domFocused && document.activeElement !== h.field) {
+            scheduleReconcile(false);
+        }
+    });
     listen(document, 'pointerlockchange', () => {
         if (h.disposed) return;
         const locked = document.pointerLockElement === canvas;
@@ -459,12 +589,21 @@ export function mount(canvas, callback, embedded, fitHeight, page) {
             key(event.key, event);
         });
         listen(field, 'keyup', event => { h.shift = event.shiftKey; });
-        listen(field, 'blur', () => {
-            h.shift = false;
+        listen(field, 'focus', () => {
+            if (!h.disposed && h.key && field === h.field) {
+                h.focusGen += 1;
+                h.domFocused = true;
+                h.pendingFieldBlur = false;
+                cancelReconcile();
+            }
+        });
+        const onFieldLostFocus = () => {
             if (h.disposed || h.syncing || !h.key || field !== h.field) return;
             h.pendingFieldBlur = true;
             queueMicrotask(checkFieldBlur);
-        });
+        };
+        listen(field, 'blur', () => { h.shift = false; onFieldLostFocus(); });
+        listen(field, 'focusout', onFieldLostFocus);
     }
     listen(textarea, 'select', () => {
         if (h.syncing || h.composing || document.activeElement !== textarea) return;
@@ -776,10 +915,13 @@ function reselect(h) {
 // zero-flicker no-op when the keyboard is already showing (r242833).
 function focusInput(h, force = false) {
     const field = h.field;
+    h.focusGen += 1;
     h.pendingFieldBlur = false;
+    h.cancelReconcile?.();
     field.inert = false;
     field.inputMode = 'text';
     if (force || document.activeElement !== field) field.focus({ preventScroll: true });
+    if (document.activeElement === field) h.domFocused = true;
     reselect(h);
 }
 
@@ -794,7 +936,10 @@ export function sync(h, key, text, base, anchor, focus, secure) {
     h.password.value = '';
     h.field = secure ? h.password : h.textarea;
     if (!key) {
+        h.focusGen += 1;
         h.pendingFieldBlur = false;
+        h.domFocused = false;
+        h.cancelReconcile?.();
         h.selection = null;
         h.textarea.value = '';
         if (editing) h.canvas.focus({ preventScroll: true });
@@ -816,6 +961,7 @@ export function sync(h, key, text, base, anchor, focus, secure) {
         else if (active === h.canvas && !h.pendingFieldBlur) focusInput(h);
         else {
             h.field.inputMode = 'text';
+            if (active === h.field) h.domFocused = true;
             reselect(h);
         }
         (secure ? h.textarea : h.password).inert = true;
@@ -1184,6 +1330,7 @@ function applyKeyboardShift(h) {
 export function syncVisualViewport(h, top, bottom, layoutH) {
     h.visualViewport = layoutH > 0 && bottom > top ? { top, bottom, layoutH } : null;
     applyKeyboardShift(h);
+    if (h.key && h.domFocused && document.activeElement !== h.field) h.scheduleReconcile?.();
 }
 
 // The focused field's IME area in window points: the page's own text field sits there, so an
@@ -1507,7 +1654,11 @@ function itemStyle(h, item, origin) {
     const left = round1(x - origin[0]);
     const top = round1(y - origin[1]);
     let css = `position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${bh}px;margin:0;padding:0;border:0;background:transparent;color:transparent;`;
-    if (item.k === 'group') return css + (item.sc ? 'overflow:hidden;list-style:none;pointer-events:none;' : 'overflow:visible;list-style:none;pointer-events:none;');
+    if (item.k === 'group') {
+        const overflow = item.sc ? 'overflow:hidden;' : 'overflow:visible;';
+        const list = item.g === 'ol' || item.g === 'li' ? '' : 'list-style:none;';
+        return css + overflow + list + 'pointer-events:none;';
+    }
     // A page's horizontal scroller: the browser scrolls it natively, so a flick inside a code
     // block scrolls the block at the compositor's rate while a vertical drag still scrolls the
     // page.
@@ -1597,6 +1748,12 @@ function applyA11yItem(h, el, item, tag, origin) {
     const css = itemStyle(h, item, origin);
     if (el._css !== css) { el._css = css; el.style.cssText = css; }
     if (item.i) el.id = item.i; else el.removeAttribute('id');
+    if (tag === 'ol' && item.st !== undefined) {
+        const v = String(item.st);
+        if (el.getAttribute('start') !== v) el.setAttribute('start', v);
+    } else if (el.getAttribute('start') !== null) {
+        el.removeAttribute('start');
+    }
     // `El::description` and `El::described_by`'s words: what a reader says after the name.
     if (item.d) el.setAttribute('aria-description', item.d); else el.removeAttribute('aria-description');
     // Role-carrying containers, live text (`status`, `alert`, `log`), images and progressbars.
@@ -2123,24 +2280,32 @@ export function cancelA11y(h) {
         h.a11yTimer = 0;
     }
     if (h.a11yIdle) {
-        if (h.a11yIdle.kind === 'idle' && globalThis.cancelIdleCallback) cancelIdleCallback(h.a11yIdle.id);
-        else clearTimeout(h.a11yIdle.id);
+        if (h.a11yIdle.idleId && globalThis.cancelIdleCallback) cancelIdleCallback(h.a11yIdle.idleId);
+        if (h.a11yIdle.timerId) clearTimeout(h.a11yIdle.timerId);
         h.a11yIdle = null;
     }
 }
 
 // Schedules a post-frame idle mirror flush off `rAF` (`requestIdleCallback` with bounded timeout,
-// falling back to `setTimeout(..., 0)`).
+// paired with a one-frame `setTimeout` backstop because Blink can stall `requestIdleCallback`
+// past `{ timeout }` after an idle WebGL2 frame with no next `rAF`; falls back to
+// `setTimeout(..., 0)` where `requestIdleCallback` is absent).
 export function scheduleA11yIdle(h, attempt = 0, timeoutMs = 100) {
     cancelA11y(h);
     const due = () => {
+        const cur = h.a11yIdle;
+        if (!cur) return;
         h.a11yIdle = null;
+        if (cur.idleId && globalThis.cancelIdleCallback) cancelIdleCallback(cur.idleId);
+        if (cur.timerId) clearTimeout(cur.timerId);
         if (!h.disposed) h.send({ kind: 'a11y_idle', attempt });
     };
     if (globalThis.requestIdleCallback) {
-        h.a11yIdle = { kind: 'idle', id: requestIdleCallback(due, { timeout: timeoutMs }) };
+        const timerId = setTimeout(due, Math.max(0, Math.min(timeoutMs, 16)));
+        const idleId = requestIdleCallback(due, { timeout: timeoutMs });
+        h.a11yIdle = { idleId, timerId };
     } else {
-        h.a11yIdle = { kind: 'timeout', id: setTimeout(due, 0) };
+        h.a11yIdle = { idleId: 0, timerId: setTimeout(due, 0) };
     }
 }
 
@@ -2359,6 +2524,9 @@ export function destroy(h) {
     h.disposed = true;
     h.image = undefined;
     clearTimeout(h.staticTimer);
+    h.clearAllPointerEndTimers?.();
+    h.pressedPointers?.clear();
+    h.cancelReconcile?.();
     cancelTouchHoldConfirm(h);
     disarmLink(h);
     h.pendingLinkDrag = null;

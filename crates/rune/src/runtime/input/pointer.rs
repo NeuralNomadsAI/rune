@@ -35,16 +35,27 @@ impl RuntimeCore {
         if drag_move {
             self.host.titlebar.move_pointer(x, y);
         }
-        let Some(held) = self.pointer.press.held() else { return };
-        let (path, d, at, button, is_drag) = (held.path.clone(), held.drag, held.at, held.button, held.drag_handler.is_some());
+        let Some(held) = self.pointer.press.held() else {
+            if self.edit.selectable.phase.drag_active() {
+                self.selection_drag(x, y);
+                self.edge_scroll_moved(x, y);
+            }
+            return;
+        };
+        let (path, d, at, button, is_drag, is_touch) = (held.path.clone(), held.drag, held.at, held.button, held.drag_handler.is_some(), held.touch);
         if held.drag_out.is_some_and(|threshold| crate::drag_out::past_threshold(at, (x, y), threshold)) && self.start_drag_out(app, path.clone()) {
             return;
         }
+        let past_slop = if is_touch {
+            (x - at.0).hypot(y - at.1) > touch_machine::TOUCH_SLOP
+        } else {
+            !press_run::within_slop(at, (x, y))
+        };
         if let Some(held) = self.pointer.press.held_mut() {
-            held.moved |= !press_run::within_slop(at, (x, y));
+            held.moved |= past_slop;
         }
         self.selection_drag(x, y);
-        self.edge_scroll_moved(y);
+        self.edge_scroll_moved(x, y);
         if self.edit.input_click.captured() {
             self.input_drag(x, y, drag_move);
             return;
@@ -83,6 +94,7 @@ impl RuntimeCore {
         let queued = self.frame.queue.len();
         let capture_inside = self.pointer.press_inside();
         let prev_link = self.hovered_link();
+        let prev_link_pressed = self.pointer.press_held().is_some_and(|h| h.link.is_some() && !h.moved && h.inside());
         let prev_sel = self.selection_drag_snapshot();
         let prev_edge = self.edit.selectable.edge.running();
         let prev_autoscroll = self.pointer.autoscroll_armed();
@@ -92,6 +104,7 @@ impl RuntimeCore {
             || self.pointer.drag_out_request.is_some()
             || self.host.titlebar.action.is_some()
             || self.hovered_link() != prev_link
+            || self.pointer.press_held().is_some_and(|h| h.link.is_some() && !h.moved && h.inside()) != prev_link_pressed
             || self.selection_drag_snapshot() != prev_sel
             || (!prev_edge && self.edit.selectable.edge.running())
             || (!prev_autoscroll && self.pointer.autoscroll_armed())
@@ -102,7 +115,7 @@ impl RuntimeCore {
     /// A button holds the pointer: the OS keeps sending its moves to this window, and a leave
     /// waits for the release.
     #[inline]
-    pub(crate) fn pointer_captured(&self) -> bool { self.pointer.captured() }
+    pub(crate) fn pointer_captured(&self) -> bool { self.pointer.captured() || self.edit.selectable.phase.drag_active() }
 
     /// The host's window content top-left in desktop pixels; `None` where it has none.
     pub(crate) fn set_window_pixels(&mut self, pixels: Option<(i32, i32)>) {
@@ -339,19 +352,19 @@ impl RuntimeCore {
             self.select_step(selectable::phase::Event::Release);
         }
         let Some(ti) = target else {
-            let now = self.now_clock();
+            let now = self.input_clock();
             self.host.titlebar.press_empty(now, x, y, self.double_click_interval);
-            if self.kbd.focus.path().is_some() {
+            if self.kbd.focus.path().is_some() && !self.armed_marker_in_focused_caret_host() {
                 self.frame.queue.push(Action::Blur);
             }
             return;
         };
-        let link = self.link_at(ti, x, y);
+        let link = self.link_at(ti, x, y).filter(|_| !self.edit.selectable.phase.dragging());
         let on_link = link.is_some();
         // Any press breaks a pending pair unless it's the second press of it.
         let pending = self.pointer.press.take_first();
-        let now = self.now_clock();
         if self.bare_drag_region(ti) {
+            let now = self.input_clock();
             let defer = !touch && self.host.titlebar.defer_mouse_drag();
             self.host.titlebar.press_region(now, x, y, self.double_click_interval, defer);
             if self.kbd.focus.path().is_some() {
@@ -364,13 +377,14 @@ impl RuntimeCore {
             return;
         }
         self.host.titlebar.other_press();
+        let now = self.now_clock();
         let n = &self.tree.nodes[ti];
         let clicks = self.pointer.press_click(&n.path, now, (x, y), self.double_click_interval);
         let second = n.handlers.on_double_press.is_some() && pending.is_some_and(|first| {
             first.path == n.path && press_run::follows(first.at, first.point, now, (x, y), self.double_click_interval)
         });
         if let Some(ji) = self.textbox_input(ti) {
-            self.input_down(ji, (x, y), now, second, link.filter(|_| ji == ti), ji == ti);
+            self.input_down(ji, (x, y), now, second, link.filter(|_| ji == ti), ji == ti, touch);
             return;
         }
         self.try_capture_pointer_lock(ti, x, y, touch);
@@ -544,7 +558,7 @@ impl RuntimeCore {
                 && inside
                 && !moved
                 && let Some(k) = link
-                && self.live_index(&path).is_some_and(|i| !self.input_drag_selects(i, at, (x, y)))
+                && (held.touch || self.live_index(&path).is_some_and(|i| !self.input_drag_selects(i, at, (x, y))))
             {
                 self.link_up(&path, k, x, y, button);
             }
@@ -568,7 +582,9 @@ impl RuntimeCore {
             let [lx, ly] = self.to_local(i, x, y);
             self.frame.queue.push(Action::Drag(path.clone(), Drag { phase: Phase::Up, x: lx, y: ly, dx, dy, window: [x, y], screen: self.screen_at(x, y), ..d }, button));
         }
-        if let Some(k) = link.filter(|_| inside) { self.link_up(&path, k, x, y, button); }
+        // A press that travelled past `CLICK_SLOP` (mouse) or `TOUCH_SLOP` (touch) latched
+        // `moved = true` in `move_pointer`: even if it returns before release, it is a drag.
+        if let Some(k) = link.filter(|_| inside && !moved) { self.link_up(&path, k, x, y, button); }
         let press = has_press && inside && !selected && !pressed_on_down && !(has_drag && moved);
         let middle = middle_press && inside;
         let click = !moved && now - down_at <= interval;

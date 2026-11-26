@@ -73,11 +73,12 @@ impl RuntimeCore {
         n.a11y.expanded.hash(&mut h);
         n.a11y.checked.hash(&mut h);
         self.node_disabled(i).hash(&mut h);
+        self.has_image_menu(i).hash(&mut h);
         n.a11y.live.hash(&mut h);
         if let Some(m) = n.a11y.more.as_deref() {
             (&m.description, &m.value, &m.set, &m.shortcut, m.invalid, m.read_only, m.sorted, m.busy,
                 m.row_count, m.column_count, m.row_index, m.column_index).hash(&mut h);
-            (m.multiselectable, m.required, m.has_popup, m.orientation, m.auto_complete).hash(&mut h);
+            (m.multiselectable, m.required, m.has_popup, m.orientation, m.auto_complete, m.list_start).hash(&mut h);
             [m.labelled_by.as_deref(), m.described_by.as_deref()].map(|k| k.and_then(|k| self.a11y_keyed(i, k)).map(|j| self.a11y_words(j))).hash(&mut h);
             if let Some(r) = m.range { [r.value, r.min, r.max, r.step.unwrap_or(f64::NAN)].map(f64::to_bits).hash(&mut h); }
             self.a11y_active_descendant(i).map(|j| self.tree.nodes[j].id.0).hash(&mut h);
@@ -102,8 +103,16 @@ impl RuntimeCore {
                     }
                 }
             }
-            (t.redacted, t.selectable, t.cold.on_link.is_some(), t.cold.on_link_secondary.is_some(), t.cold.links.len()).hash(&mut h);
-            for l in &t.cold.links { (l.start, l.end, &l.id, l.role, &l.label).hash(&mut h); }
+            (
+                t.redacted,
+                t.selectable,
+                t.flags.has(crate::el::TextFlags::NO_LINK_MENU),
+                t.cold.on_link.is_some(),
+                t.cold.on_link_secondary.is_some(),
+                !t.cold.links.is_empty() && self.ancestor_has_secondary_press(i),
+                t.cold.links.len(),
+            ).hash(&mut h);
+            for l in &t.cold.links { (l.start, l.end, &l.id, &l.href, l.role, &l.label).hash(&mut h); }
             for p in &t.cold.pills {
                 if let Some(b) = p.bare.as_deref().filter(|b| b.label.is_some()) { (p.start, &b.label, &b.help).hash(&mut h); }
             }
@@ -198,7 +207,7 @@ impl RuntimeCore {
         let mut sub = vec![0u64; self.tree.nodes.len()];
         for j in (0..self.tree.nodes.len()).rev() {
             let n = &self.tree.nodes[j];
-            let own = if n.a11y.hidden || n.vis.opacity <= 0.01 || n.is_secure() { 0 }
+            let own = if n.a11y.hidden || n.role == "list-marker" || n.vis.opacity <= 0.01 || n.is_secure() { 0 }
                 else if let Some(l) = n.label.as_deref() { hash_str(l) }
                 else { n.text.as_deref().filter(|_| n.input.is_none()).map_or(0, |t| hash_str(t.source_text())) };
             sub[j] = mix(sub[j], own);
@@ -357,7 +366,7 @@ impl RuntimeCore {
         // What a pointer or keyboard user can do to it, routed to the same handlers.
         if actionable {
             if handlers.is_some_and(|h| h.on_press.is_some()) || input.is_some() || (w.delegated_a11y && roles::composite_item(role)) { node.add_action(Ak::Click); }
-            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) { node.add_action(Ak::ShowContextMenu); }
+            if handlers.is_some_and(|h| h.on_secondary_press.is_some()) || self.has_image_menu(i) { node.add_action(Ak::ShowContextMenu); }
             if n.a11y.expanded.is_some() && handlers.is_some_and(|h| h.on_press.is_some()) {
                 node.add_action(if n.a11y.expanded == Some(true) { Ak::Collapse } else { Ak::Expand });
             }
@@ -583,7 +592,7 @@ impl RuntimeCore {
             let n = &self.tree.nodes[j];
             if skip.is_some_and(|s| inside.contains(&s)) { j += 1; continue; }
             skip = None;
-            if n.a11y.hidden || n.vis.opacity <= 0.01 || n.is_secure() {
+            if n.a11y.hidden || n.role == "list-marker" || n.vis.opacity <= 0.01 || n.is_secure() {
                 skip = Some(j);
             } else if let Some(l) = n.label.as_deref().filter(|l| !l.trim().is_empty()) {
                 push_words(&mut out, l);

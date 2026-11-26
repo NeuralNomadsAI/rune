@@ -47,6 +47,7 @@ mod backdrop;
 mod chrome;
 mod color_scheme;
 mod cpu_first;
+pub(crate) mod display_queue;
 pub(crate) mod displays;
 mod event_loop;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -62,6 +63,7 @@ mod keys;
 mod panic_trap;
 #[cfg(not(target_arch = "wasm32"))]
 mod pointer_lock;
+mod resize_sync;
 pub mod spec;
 mod state;
 mod surface;
@@ -87,6 +89,7 @@ pub use cpu_first::CpuFirst;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use cpu_first::WebStart;
 pub use handle::WindowHandle;
+pub use resize_sync::ResizeSync;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use event_loop::run;
 #[cfg(test)]
@@ -100,6 +103,9 @@ pub(crate) use keys::{consumed_mods, key_base, map_key_event, map_mods, platform
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) use keys::web_key_base_str;
 pub(crate) use state::frame;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use state::heap_trim::test_support as heap_trim_test;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use state::rest;
 #[cfg(not(target_arch = "wasm32"))]
@@ -221,6 +227,11 @@ pub(crate) enum WakeEvent {
     /// wakes the immediate next turn so `about_to_wait` drains it without entering `ControlFlow::Poll`.
     #[cfg(not(target_arch = "wasm32"))]
     LayerPending,
+    /// Windows: system effects policy changed (Transparency effects, Energy/Battery Saver,
+    /// `CompositionCapabilities`, High Contrast, or Remote Desktop); every host reconciles
+    /// `El::system_material` native vs fallback state.
+    #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+    MaterialPolicyChanged,
 }
 
 /// What `Windows` needs of a host, whatever its state type: an app window or an overlay.
@@ -283,6 +294,10 @@ pub(crate) trait AnyHost {
     /// Syncs this host's native window theme with the current process-wide `app_color_scheme()`.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn apply_app_color_scheme(&mut self) {}
+    /// Windows: reconciles `El::system_material` native vs fallback state after a system effects
+    /// policy notification.
+    #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+    fn on_material_policy_changed(&mut self) {}
 }
 
 /// Collects startup creation errors from finished hosts and returns whether any loop-keeping host
@@ -538,6 +553,13 @@ impl ApplicationHandler<WakeEvent> for Windows {
                 let proxy = this.proxy.clone();
                 crate::open_url::instance::on_relaunch(move || proxy.send_event(WakeEvent::Reopen).is_ok());
             }
+            #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+            {
+                let proxy = this.proxy.clone();
+                crate::system_material::windows::set_policy_waker(std::sync::Arc::new(move || {
+                    proxy.send_event(WakeEvent::MaterialPolicyChanged).ok();
+                }));
+            }
             app_events::install_quit(&this.hosts, &this.proxy);
             crate::open_url::incoming::settle();
             // A window opened at launch took it; a GPU kept for a later one would sit idle until then.
@@ -574,6 +596,13 @@ impl ApplicationHandler<WakeEvent> for Windows {
                 }
                 WakeEvent::LayerPending => {
                     let _ = wayland_wake::step(&mut this.wayland_wake, wayland_wake::Event::WakeReceived);
+                    return;
+                }
+                #[cfg(all(target_os = "windows", feature = "windows-system-material"))]
+                WakeEvent::MaterialPolicyChanged => {
+                    for host in this.hosts.iter_mut().flatten() {
+                        host.on_material_policy_changed();
+                    }
                     return;
                 }
             };
@@ -638,13 +667,19 @@ impl ApplicationHandler<WakeEvent> for Windows {
             for host in this.hosts.iter_mut().flatten() {
                 animating |= host.about_to_wait(event_loop);
             }
+            let wayland = is_wayland(event_loop);
+            if wayland && !event_loop.exiting() {
+                display_queue::dispatch_pending();
+            }
             // A window an idle hook closed (`App::on_window_geometry`) goes before the loop sleeps.
             if this.hosts.iter().flatten().any(|host| host.finished()) { this.cleanup(event_loop); }
             // The frames windows want next (`redraw`), and on Windows the paints the system keeps
             // putting off behind another window's.
             let now = crate::time::now();
             for host in this.hosts.iter_mut().flatten() { host.turn_ends(event_loop, now); }
-            let effects = wayland_wake::about_to_wait(&mut this.wayland_wake, &this.hosts);
+            let has_display_watch = wayland && !event_loop.exiting() && display_queue::has_watches();
+            let has_pending_display = has_display_watch && display_queue::has_pending();
+            let effects = wayland_wake::about_to_wait(&mut this.wayland_wake, &this.hosts, has_display_watch, has_pending_display);
             this.apply_wayland_wake(event_loop, effects);
             // Layer surfaces have no redraw events: keep turning while one animates (its vsync
             // paces the loop). Hosts whose only motion is an ambient loop sleep until its next step.

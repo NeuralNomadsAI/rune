@@ -15,6 +15,7 @@ pub(crate) struct RuntimeConfig<S: 'static> {
     pub(crate) on_visibility: Option<fn(&mut S, bool, &mut Tx)>,
     pub(crate) on_ime: Option<fn(&mut S, &crate::Ime, &mut Tx) -> bool>,
     pub(crate) on_field_menu: Option<fn(&mut S, crate::FieldMenuRequest, &mut Tx)>,
+    pub(crate) on_popup_menu: Option<fn(&mut S, crate::PopupMenuRequest, &mut Tx)>,
     pub(crate) modifier_keys: bool,
     pub(crate) media_keys: bool,
     pub(crate) tab_visits_controls: bool,
@@ -48,6 +49,7 @@ impl<S: 'static> Clone for RuntimeConfig<S> {
             on_visibility: self.on_visibility,
             on_ime: self.on_ime,
             on_field_menu: self.on_field_menu,
+            on_popup_menu: self.on_popup_menu,
             modifier_keys: self.modifier_keys,
             media_keys: self.media_keys,
             tab_visits_controls: self.tab_visits_controls,
@@ -69,6 +71,7 @@ impl<S: 'static> Default for RuntimeConfig<S> {
             on_visibility: None,
             on_ime: None,
             on_field_menu: None,
+            on_popup_menu: None,
             modifier_keys: false,
             media_keys: false,
             tab_visits_controls: false,
@@ -127,6 +130,7 @@ impl<S: 'static> Runtime<S> {
             on_visibility,
             on_ime,
             on_field_menu,
+            on_popup_menu,
             modifier_keys,
             media_keys,
             tab_visits_controls,
@@ -143,6 +147,7 @@ impl<S: 'static> Runtime<S> {
         self.hooks.on_visibility = on_visibility;
         self.hooks.on_ime = on_ime;
         self.hooks.on_field_menu = on_field_menu;
+        self.hooks.on_popup_menu = on_popup_menu;
         self.core_mut().configure_core(CoreConfig {
             modifier_keys,
             media_keys,
@@ -153,6 +158,66 @@ impl<S: 'static> Runtime<S> {
             max_native_materials,
             dev_stats,
         });
+    }
+}
+
+impl<S: 'static> crate::App<S> {
+    /// Fallback handler for pop-up and context menus on platforms where
+    /// [`crate::popup_menu_supported`] is `false` and not on the web (such as Linux).
+    ///
+    /// When set and `!popup_menu_supported() && !cfg!(target_arch = "wasm32")`, Rune hands
+    /// every validated pop-up menu request (app [`Tx::popup_menu`], selectable-text Copy menus,
+    /// default link/image menus, and text-field menus when [`Self::on_field_menu`] is unset) as
+    /// a [`crate::PopupMenuRequest`] to `f` instead of answering `None` immediately. Render it
+    /// in-window (for example with `rune_kit::Menu::from_popup_menu`) and answer with
+    /// [`Tx::resolve_popup_menu`]. On macOS, Windows, and web, this hook is never called.
+    ///
+    /// ```
+    /// use rune::{App, AppSpec, PopupMenuRequest, Tx, el};
+    ///
+    /// struct S { menu: Option<PopupMenuRequest> }
+    /// let _app = App::new(AppSpec::new("demo", (480.0, 320.0), || S { menu: None }, |_, _| el()))
+    ///     .on_popup_menu(|s: &mut S, req: PopupMenuRequest, _tx: &mut Tx| {
+    ///         s.menu = Some(req);
+    ///     });
+    /// ```
+    pub fn on_popup_menu(mut self, f: fn(&mut S, crate::PopupMenuRequest, &mut Tx)) -> Self {
+        self.runtime.on_popup_menu = Some(f);
+        self
+    }
+
+    /// Controls whether Rune calls glibc's `malloc_trim(0)` once off the UI thread after a
+    /// window or overlay finishes resting on Linux (`target_env = "gnu"`).
+    ///
+    /// Enabled by default (`true`). At rest, Rune releases unused text layouts, glyph runs,
+    /// images, dormant scene slots, and GPU caches; on Linux with glibc, fragmented free arena
+    /// chunks remain resident in `VmRSS` until `malloc_trim(0)` runs. Rune runs it once per
+    /// rest on its shared task pool, coalesced across windows and overlays with a 30 s cooldown,
+    /// never on a periodic idle timer.
+    ///
+    /// While `malloc_trim(0)` runs off the UI thread after rest, glibc locks each arena in turn
+    /// while trimming it: on very large freed heaps (~387 MiB), another thread allocating in that
+    /// same arena can wait ~14 ms (longer than one 120 Hz frame at 8.3 ms). Apps with allocating
+    /// real-time threads can opt out with `.trim_heap_at_rest(false)` or `RUNE_MALLOC_TRIM=0`.
+    /// (Rune's own `AudioOutput` worker thread allocates nothing while playing.)
+    ///
+    /// At runtime Rune probes once whether Rust's global allocator is backed by glibc `malloc`;
+    /// binaries using a custom `#[global_allocator]` (such as mimalloc or jemalloc) or an
+    /// `LD_PRELOAD` allocator skip the trim automatically. Ignored on macOS, Windows, musl,
+    /// Android, iOS, and `wasm32`.
+    ///
+    /// ```
+    /// use rune::{App, AppSpec, el};
+    ///
+    /// let _app = App::new(AppSpec::new("Audio", (640.0, 480.0), || (), |_, _| el()))
+    ///     .trim_heap_at_rest(false);
+    /// ```
+    pub fn trim_heap_at_rest(self, enabled: bool) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::window::rest::set_heap_trim_enabled(enabled);
+        #[cfg(target_arch = "wasm32")]
+        let _ = enabled;
+        self
     }
 }
 
@@ -180,6 +245,7 @@ mod tests {
             .on_visibility(|s, v, _| s.visibility.push(v))
             .on_ime(|s, _: &Ime, _| { s.ime += 1; true })
             .on_field_menu(|_, _, _| {})
+            .on_popup_menu(|_, _, _| {})
             .modifier_keys()
             .media_keys()
             .tab_visits_controls(true)
@@ -200,6 +266,7 @@ mod tests {
         assert!(rt.hooks.on_visibility.is_some());
         assert!(rt.hooks.on_ime.is_some());
         assert!(rt.hooks.on_field_menu.is_some());
+        assert!(rt.hooks.on_popup_menu.is_some());
         assert!(rt.modifier_keys());
         assert!(rt.media_keys());
         assert!(!rt.srgb_blend());
@@ -238,6 +305,6 @@ mod tests {
         assert_eq!(cfg.emoji_family, None);
         assert_eq!(cfg.max_native_materials, crate::MAX_NATIVE_MATERIALS);
         assert_eq!(cfg.reveal_fps, 0.0);
-        assert!(cfg.on_focus.is_none() && cfg.on_mods.is_none() && cfg.on_visibility.is_none() && cfg.on_ime.is_none() && cfg.on_field_menu.is_none() && cfg.dev_stats.is_none());
+        assert!(cfg.on_focus.is_none() && cfg.on_mods.is_none() && cfg.on_visibility.is_none() && cfg.on_ime.is_none() && cfg.on_field_menu.is_none() && cfg.on_popup_menu.is_none() && cfg.dev_stats.is_none());
     }
 }

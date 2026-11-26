@@ -57,7 +57,7 @@ mod visuals;
 pub use a11y::{AutoComplete, HasPopup, LiveRegion, Orientation};
 pub(crate) use a11y::{A11y, Checked};
 pub use anchor::{Anchor, Side, anchor_rect, anchor_rect_in};
-pub(crate) use crate::clipboard::tx::{ClipboardRead, ReadFn};
+pub(crate) use crate::clipboard::tx::{ClipboardRead, CopyImageCallback, CopyImageFn, ReadFn};
 pub use crate::cursor::{Cursor, CursorImage};
 pub use direction::Direction;
 pub(crate) use direction::{DirEffect, DirEvent, Flow, Pin, mirror_anchor, mirror_side, mirror_visual, step as step_direction};
@@ -84,7 +84,7 @@ pub(crate) use scroll::{AtBottomFn, ScrollAxes, ScrollEdges, VisibleRowsFn};
 pub(crate) use selection_scope::{apply_selection_off, selection_off};
 pub use selection_style::SelectionStyle;
 pub(crate) use sticky::{Sticky, StickyEdge};
-pub(crate) use text_spec::{Elide, InlineAnchor, TextDir, TextDirEvent, step_text_dir, wipe_links, wipe_string};
+pub(crate) use text_spec::{Elide, InlineAnchor, TextDir, TextDirEvent, TextFlags, step_text_dir, wipe_links, wipe_string};
 pub use text_spec::LineFill;
 pub use text_spec::TextSpec;
 pub(crate) use tx::{Commit, FocusAsk, FullScreenRequest, MotionSource, SelectRequest, TraceCalls};
@@ -103,6 +103,36 @@ pub fn text(content: impl Into<String>) -> El {
     let mut e = base(FlexDirection::Row);
     e.role = RoleTag::TEXT;
     e.text = Some(crate::cold::SharedBox::new(TextSpec::new(content.into())));
+    e
+}
+
+/// Transparent glyph-less text layer backed by app-placed character boxes
+/// ([`PositionedText`](crate::PositionedText)), for selectable and copyable text over an
+/// externally painted page bitmap (such as a PDF).
+///
+/// Defaults to [`El::selectable`](El::selectable)`(true)` with [`Cursor::Text`]; draws zero
+/// glyphs and paints only selection highlights, [`El::caret_browsing`] carets,
+/// [`El::text_highlight`] / [`El::highlight_texts`], and [`Cx::mark_texts`](crate::Cx::mark_texts).
+/// Participates in [`El::selection_group`], plain and HTML copy, [`Cx::selection_rects`](crate::Cx::selection_rects),
+/// [`Runtime::text_offset_at`](crate::Runtime::text_offset_at), and inline [`Link`](crate::Link) spans.
+///
+/// ```
+/// use rune::{PositionedText, col, el, positioned_text};
+///
+/// let page = PositionedText::new(
+///     "Hi\n",
+///     vec![[10.0, 20.0, 8.0, 12.0], [18.0, 20.0, 4.0, 12.0], [0.0; 4]],
+/// )
+/// .view_box(612.0, 792.0);
+/// let _view = col().selection_group(true).child(
+///     el().size(612.0, 792.0).child(positioned_text(&page).w_full().h_full()),
+/// );
+/// ```
+pub fn positioned_text(text: &crate::text::PositionedText) -> El {
+    let mut e = base(FlexDirection::Row);
+    e.role = RoleTag::TEXT;
+    e.text = Some(crate::cold::SharedBox::new(TextSpec::new_positioned(text.clone())));
+    e.handlers.cursor = Some(Cursor::Text);
     e
 }
 

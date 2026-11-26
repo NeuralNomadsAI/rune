@@ -31,6 +31,7 @@ members = [
     "examples/android-fields",
     "examples/android-hello",
     "examples/android-gallery",
+    "examples/hello-floor",
     "examples/launch-floor",
     "examples/web-hello",
     "examples/web-showcase",

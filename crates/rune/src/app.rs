@@ -119,6 +119,10 @@ pub struct App<S: 'static> {
     pub(crate) open: bool,
     pub(crate) release_gpu: bool,
     pub(crate) cpu_first: crate::CpuFirst,
+    pub(crate) resize_sync: crate::ResizeSync,
+    pub(crate) gpu_loss_policy: crate::GpuLossPolicy,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) gpu_loss_latch: Option<Arc<crate::render::loss_latch::GpuLossLatch>>,
     pub(crate) prewarm_effects: crate::PrewarmEffects,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) accessory: bool,
@@ -202,6 +206,10 @@ impl<S: 'static> App<S> {
             open: true,
             release_gpu: false,
             cpu_first: crate::CpuFirst::Auto,
+            resize_sync: crate::ResizeSync::Auto,
+            gpu_loss_policy: crate::GpuLossPolicy::Recover,
+            #[cfg(not(target_arch = "wasm32"))]
+            gpu_loss_latch: None,
             prewarm_effects: crate::PrewarmEffects::NONE,
             accessory: false,
             standard_menus: false,
@@ -679,6 +687,9 @@ impl<S: 'static> App<S> {
             }
             let (mut overlay, handle) = crate::overlay::OverlayHost::new(configured, state, &self.spec, self.runtime.font_smoothing);
             overlay.set_prewarm_effects(self.prewarm_effects);
+            if let Some(latch) = &self.gpu_loss_latch {
+                overlay.set_gpu_loss_latch(Some(Arc::clone(latch)));
+            }
             self.overlays.push(Box::new(overlay));
             handle
         }
@@ -772,6 +783,8 @@ impl<S: 'static> App<S> {
         self.cpu_first = mode;
         self
     }
+
+
 
     /// Names the optional effect GPU pipelines this app's windows and overlays compile in the
     /// background before their first use ([`PrewarmEffects`](crate::PrewarmEffects)): isolated
@@ -1288,13 +1301,6 @@ impl<S: 'static> App<S> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn try_run(self) -> Result<(), String> {
         self.try_run_start().map_err(crate::tooling::StartError::message)
-    }
-
-    /// On Android the activity owns the loop: `run` hands the app to `RuneView`, which starts
-    /// it in its first window and returns at once.
-    #[cfg(target_os = "android")]
-    fn try_run_start(self) -> Result<(), crate::tooling::StartError> {
-        crate::platform::android::register(self).map_err(crate::tooling::StartError::Window)
     }
 
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]

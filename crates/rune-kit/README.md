@@ -55,6 +55,23 @@ let mut k = rune_kit::Kit::from_palette(rune_kit::PaletteSeed {
 k.radius.sm = 3.0;
 ```
 
+**Component metrics (`Kit::metrics`).** Controls whose corner radii match the radius scale (`SegmentedControl` `md`, `Collapsible` trigger `sm`, `Keybind` `xs`) read `k.radius` automatically. Override per-component heights, padding, radii, borders or flat switch chrome on `k.metrics` (all entries default to `None`, keeping the built-in values; start from each type's `::kit(&k)` constructor with `..`):
+
+```rust
+let mut k = rune_kit::Kit::neutral(true);
+k.radius.md = 8.0;
+k.metrics.segmented = Some(rune_kit::SegmentedMetrics { height: 24.0, padding_x: 8.0, ..rune_kit::SegmentedMetrics::kit(&k) });
+k.metrics.disclosure_header_height = Some(26.0);
+k.metrics.progress = Some(rune_kit::ProgressMetrics { border_width: 0.0, ..rune_kit::ProgressMetrics::kit(&k) });
+k.metrics.divider_thickness = Some(0.5);
+k.metrics.keybind = Some(rune_kit::KeybindMetrics { height: 16.0, ..rune_kit::KeybindMetrics::kit(&k) });
+k.metrics.text_area_min_height = Some(60.0);
+k.metrics.standard_switch = Some(rune_kit::StandardSwitchMetrics { track_width: 32.0, track_height: 18.0, ..rune_kit::StandardSwitchMetrics::kit(&k) });
+k.metrics.switch_look = Some(rune_kit::SwitchLook { track_border: 1.0, ..rune_kit::SwitchLook::flat(&k) });
+```
+
+For a one-off flat compact or web switch without changing the theme, call `Switch::new(on).flat()`. See `rune-metrics--themes` and `rune-switch--flat` in `examples/kit-gallery`.
+
 Layers step OKLab lightness away from `bg`; borders, hover and press are `fg` at low alpha,
 as a browser blends it (solved over `bg`, `k.blend_over`, when built in a window that blends in
 linear light). Secondary text uses OKLab with contrast floors of 4.5:1
@@ -240,7 +257,12 @@ same commit (see `rune-overlays--tx-callbacks`). `Select::step_closed(true)` opt
 `Select` into stepping through choices with Up and Down via `on_choose` without opening the
 popup, clamping at the ends while `Alt+Down`, Space and clicking still open it (see
 `rune-select--step-closed`, and `rune-focus--keyboard` for `El::press_on_return()` and
-entering a `focus_group` from a focused container). `Menu::label` names the open `role="menu"`
+entering a `focus_group` from a focused container). `Kit::metrics` also covers overlays (`DialogMetrics`, `PopupRowMetrics`, `SelectMetrics`,
+`PopoverMetrics`, and `MenuMetrics`), with `::kit(&k)` constructors whose radii follow
+`k.radius.{sm,md}` automatically (see `rune-overlays--metrics` in the gallery). `Menu::padding`,
+`Menu::separator_spacing(above, below)`, and `Menu::inner_border` override a menu's row padding,
+separator spacing, and inner border per instance (propagating to open submenus), and
+`Menu::separator_keyed` assigns a separator a stable key without changing `MenuEntry`. `Menu::label` names the open `role="menu"`
 surface; `MenuItem::key` assigns a stable key instead of positional `{menu_key}-item{i}` so
 inserting rows above keeps focus; `MenuItem::a11y_label` separates the accessible name (and
 typeahead / submenu name) from truncated drawn text; and `MenuItem::submenu_placement` (default
@@ -257,8 +279,9 @@ an app that closes the menu some other way clears the flags itself. All `on_subm
 one menu take the same state type. Side-placed
 menus and submenus clamp on both axes via `El::anchored_fit` when they would overflow a small
 window so long submenus shrink and scroll inside the viewport (see
-`rune-menu--submenu-small-window`, and `rune-menu--field-menu-fallback` for rendering
-`App::on_field_menu` with `Menu`).
+`rune-menu--submenu-small-window`, `rune-menu--field-menu-fallback` for rendering
+`App::on_field_menu` with `Menu`, and `Menu::from_popup_menu` + `Menu::on_close_tx` for
+rendering `App::on_popup_menu` in one call — see `rune-menu--popup-menu-fallback`).
 
 ### Accessibility
 
@@ -462,11 +485,11 @@ draws Markdown tables with the same font, padding and rules.
 Feature `markdown`: `Markdown::new(src).build(&kit)`, or without a kit
 `Markdown::new(src).render(&MarkdownStyle::neutral(dark))`.
 It renders CommonMark plus GFM tables, and is built for streaming: re-render with the longer
-source each time, and earlier blocks stay mounted. `Markdown::on_link_hover(|s, url: Option<&str>, rect: Option<[f32; 4]>, tx| ..)`
+source each time, and earlier blocks stay mounted. Real-URL links (`http:`, `https:`, `mailto:`) get Rune's default Open Link / Copy Link context menu on right-click and Menu / Shift+F10 (yielding to `Markdown::on_link_secondary` and ancestor `on_secondary_press`; opt out with `Markdown::link_menu(false)`). `Markdown::on_link_hover(|s, url: Option<&str>, rect: Option<[f32; 4]>, tx| ..)`
 reports the hovered link's destination and hit line box in window points (activating link hover
 tracking even without `on_link` or `on_link_secondary`, and leaving the old block before entering
 the new one across paragraphs; see `rune-markdown--link-hover` in `kit-gallery`).
-`Markdown::emoji(|name| Option<Pixels>)` draws `:name:` shortcodes in prose (not in code, math or
+To give Markdown images a right-click context menu (Save Image As…, Copy Image, Copy Image Address), compose `El::image_menu` inside `Markdown::image_frame(|el, frame| el.image_menu(ImageMenu::new(frame.image).save_bytes(..).address(frame.src)))` (see `rune-image--decode` in `kit-gallery`). `Markdown::emoji(|name| Option<Pixels>)` draws `:name:` shortcodes in prose (not in code, math or
 a link showing its address) as the app's pictures, 1.2 em tall on the baseline; selection, copy and
 search still see the shortcode. The pictures are drawn only, with no hover or press of their own.
 
@@ -537,18 +560,22 @@ search still see the shortcode. The pictures are drawn only, with no hover or pr
   top-level paragraphs, headings, lists and quotes at a readable measure while code blocks, diffs,
   diagrams, tables, images and rules keep the full column width; `inline_code_text(color)` colours
   ordinary inline code glyphs without changing code inside links or `Markdown::code_link`;
-  `paragraph_margin`, `heading_margin(level, top, bottom)` and `image_margin` override vertical
+  `paragraph_margin`, `heading_margin(level, top, bottom)`, `list_margin`, `quote_margin`, `rule_margin` and `image_margin` override vertical
   block spacing while preserving CSS margin collapsing and list-item rules; and
   `code_block_radius(radius)` overrides the 6 pt corner radius on fenced code and diff cards.
   `Markdown::wrap_anywhere(true)` enables CSS `overflow-wrap: anywhere` on paragraphs, headings,
   lists, block quotes, table cells, diff lines, and non-`scroll_wide` code fences so long unbroken
   tokens wrap inside narrow columns instead of overflowing (`false` by default).
+  `Markdown::hard_breaks(true)` renders CommonMark soft line breaks (single newlines in paragraphs,
+  list items, block quotes, headings and table cells) as line breaks (`'\n'`) instead of spaces
+  for user-typed chat messages (`false` by default, following CommonMark), while leaving code spans,
+  code blocks, post-image line breaks, streaming incremental parsing and `copy_source(true)` intact.
 
 `Tooltip::label(..).render(&TooltipStyle::neutral(dark), &mut layer)` builds a tooltip without
 a kit. `TooltipStyle::max_width(w)` caps its width; `label`, `text` and a `.wrap()` text `child` wrap at it. The
 app owns `open`, so the hover delay is a `wake_after` in its hover handler; `El::help(text)` is
 the delayed, self-dismissing system tooltip when the look needn't match. The gallery's `rune-markdown--walkthrough`, `rune-markdown--diagrams`,
-`rune-markdown--mermaid-large`, `rune-markdown--table-styles`, `rune-markdown--code`, `rune-markdown--styled` and `rune-markdown--wrap-and-frames` scenes show every feature.
+`rune-markdown--mermaid-large`, `rune-markdown--table-styles`, `rune-markdown--code`, `rune-markdown--styled`, `rune-markdown--wrap-and-frames` and `rune-markdown--hard-breaks` scenes show every feature.
 
 ## Diff
 

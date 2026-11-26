@@ -172,10 +172,12 @@ impl ClipboardImage {
         Some(Self { png, size })
     }
     /// Straight-alpha sRGB RGBA8 pixels (`width * height * 4` bytes, rows top first), encoded
-    /// as PNG on the calling thread. `None` when the length doesn't match, a side is zero, the
-    /// image passes 64 megapixels or its PNG passes [`MAX_IMAGE_BYTES`]. To copy an image an
-    /// [`ImageCache`](crate::ImageCache) decoded, [`Tx::copy_image`](crate::Tx::copy_image)
-    /// encodes it off the event thread instead.
+    /// synchronously as PNG on the calling thread (required because [`Self::png`] is
+    /// synchronous; large images can take seconds—e.g. ~3.3 s for a 4000×3000 photo). Returns
+    /// `None` when the length doesn't match, a side is zero, the image passes 64 megapixels, or
+    /// its PNG passes [`MAX_IMAGE_BYTES`]. To copy an image an [`ImageCache`](crate::ImageCache)
+    /// decoded without blocking the event thread, use [`Tx::copy_image`](crate::Tx::copy_image)
+    /// or [`Tx::copy_image_then`](crate::Tx::copy_image_then) instead.
     ///
     /// ```
     /// # use rune::clipboard::ClipboardImage;
@@ -200,5 +202,44 @@ impl ClipboardImage {
 impl std::fmt::Debug for ClipboardImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipboardImage").field("size", &self.size).field("bytes", &self.png.len()).finish()
+    }
+}
+
+/// Why [`Tx::copy_image`](crate::Tx::copy_image) or
+/// [`Tx::copy_image_then`](crate::Tx::copy_image_then) did not put the image on the clipboard.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyImageError {
+    /// The image has not finished decoding yet.
+    NotReady,
+    /// Decoding the image failed.
+    DecodeFailed(crate::ImageError),
+    /// The image exceeded 64 megapixels or its encoded PNG exceeded [`MAX_IMAGE_BYTES`].
+    TooLarge,
+    /// A newer clipboard write (from this app or another) superseded this copy before it
+    /// wrote to the clipboard.
+    Superseded,
+    /// The OS or browser clipboard rejected or could not perform the write.
+    Failed(String),
+}
+
+impl std::fmt::Display for CopyImageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotReady => f.write_str("image is still decoding"),
+            Self::DecodeFailed(err) => write!(f, "image failed to decode: {err}"),
+            Self::TooLarge => f.write_str("image exceeds clipboard size limits"),
+            Self::Superseded => f.write_str("copy superseded by a newer clipboard write"),
+            Self::Failed(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for CopyImageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DecodeFailed(err) => Some(err),
+            _ => None,
+        }
     }
 }
