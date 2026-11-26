@@ -191,7 +191,15 @@ impl View {
     pub(super) fn set_insets(&mut self, insets: Insets) -> Next {
         self.insets = insets;
         let area = lifecycle::safe_area(insets, self.density);
-        if let Some(host) = &mut self.host { host.set_safe_area(area) }
+        // The keyboard covers the window without resizing it: the runtime keeps the focused
+        // field's caret in what shows above it, as it does for a browser's keyboard.
+        let band = self.lifecycle.px().and_then(|px| lifecycle::visible_band(insets, px, self.density));
+        if let Some(host) = &mut self.host {
+            host.set_safe_area(area);
+            let core = host.core();
+            core.set_visual_viewport_y(band);
+            if band.is_some() { core.request_caret_follow() }
+        }
         self.step(Event::Frame, None)
     }
 
