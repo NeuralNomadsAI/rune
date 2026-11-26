@@ -1,0 +1,1 @@
+- Android: the keyboard no longer hides the field it types into. It covers the window without resizing it, so when it opens the focused field's scroll viewports move to show the caret in what stays in sight, as for a browser's keyboard. The kit gallery pads its page by `Cx::safe_area`.
