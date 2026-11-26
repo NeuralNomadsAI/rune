@@ -149,15 +149,25 @@ internal class RuneSelection(private val view: View, private val events: Events)
         try { return a.getDrawable(0) } finally { a.recycle() }
     }
 
-    /** One handle: the theme's drawable in a window of its own, whose [hot] fraction of the width points at the end. */
+    /**
+     * One handle: the theme's drawable in a window of its own, whose [hot] fraction of the width
+     * points at the end. The drawable is some 22dp of ink; the window around it is a finger's
+     * target, as the system's own handles have.
+     */
     private inner class Handle(private val which: Int, attr: Int, private val hot: Float) {
         private val icon = themed(attr)
         private val width = icon?.intrinsicWidth ?: 0
         val height = icon?.intrinsicHeight ?: 0
+        private val target = (TARGET_DP * view.resources.displayMetrics.density).roundToInt()
+        /** Blank on each side of the drawable, and below it. */
+        private val side = max(0, target - width) / 2
+        private val below = max(0, target - height)
         private val window = PopupWindow(ImageView(view.context).apply {
             setImageDrawable(icon)
+            scaleType = ImageView.ScaleType.CENTER
+            setPadding(side, 0, side, below)
             setOnTouchListener { _, event -> touch(event) }
-        }, width, height).apply {
+        }, width + 2 * side, height + below).apply {
             isClippingEnabled = false
             windowLayoutType = WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL
         }
@@ -183,7 +193,7 @@ internal class RuneSelection(private val view: View, private val events: Events)
             if (!shown && held) return
             if (!shown || icon == null || !view.isAttachedToWindow) return window.dismiss()
             val at = IntArray(2).also(view::getLocationInWindow)
-            val (left, y) = at[0] + (x - width * hot).roundToInt() to at[1] + bottom.roundToInt()
+            val (left, y) = at[0] + (x - width * hot).roundToInt() - side to at[1] + bottom.roundToInt()
             if (window.isShowing) window.update(left, y, -1, -1) else window.showAtLocation(view, Gravity.NO_GRAVITY, left, y)
         }
 
@@ -228,6 +238,8 @@ internal class RuneSelection(private val view: View, private val events: Events)
         const val POINT = 1
         const val RANGE = 2
         const val CARET_MS = 4000L
+        /** The least width and height of a handle's touch target. */
+        const val TARGET_DP = 48
         const val UNIT = '\u001f'
         const val RECORD = '\u001e'
     }

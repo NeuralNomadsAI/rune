@@ -266,3 +266,16 @@ fn the_start_of_right_to_left_text_is_on_its_right() {
     let Some(Ends::Range { start, end }) = rt.selection_ends() else { panic!("no range: {:?}", rt.selection_ends()) };
     assert!(start.x > end.x, "start {} end {}", start.x, end.x);
 }
+
+#[test]
+fn a_long_press_past_a_fields_text_places_the_caret_and_offers_paste() {
+    let mut rt = rig();
+    let (cx, y) = rt.find("f").unwrap();
+    // The field is 300 wide and its text far shorter: its right end is blank.
+    long_press(&mut rt, cx + 140.0, y);
+    assert!(rt.state.edit.focused);
+    assert_eq!(rt.state.edit.range(), (FIELD.len(), FIELD.len()), "no word is selected");
+    let show = rt.take_text_menu().expect("the field's menu");
+    assert!(show.menu.find("paste").unwrap().is_enabled() && !show.menu.find("copy").unwrap().is_enabled());
+    assert!(matches!(rt.selection_ends(), Some(Ends::Caret(_))));
+}

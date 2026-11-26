@@ -71,7 +71,8 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Text selection**: a long press on selectable text or in a field selects the word under it,
   as Android's text does. `RuneView` hangs the system's handles on the selection's ends and shows
   the text's own menu (Cut, Copy, Paste, Select all, in the system's words) as the floating
-  toolbar, even where the app has `App::on_field_menu`. A second tap's word gets them too. A
+  toolbar, even where the app has `App::on_field_menu`. A second tap's word gets them too; a long
+  press in the blank beside or below a field's text places the caret there and offers Paste. A
   handle drags its end as far as the other, with the system's magnifier over the line (Android
   9+); held at the top or bottom of selectable text's viewport, it scrolls it. A tap in a field
   puts a handle under its caret for four seconds: it drags the caret, and a tap on it shows the
