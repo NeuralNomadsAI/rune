@@ -136,10 +136,18 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         if (!onCheckIsTextEditor()) return null
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        val editor = nativeEditor(handle)
+        val (secure, oneLine) = (editor and EDITOR_SECURE != 0) to (editor and EDITOR_ONE_LINE != 0)
+        // A password is not corrected, suggested or learnt; a one-line field has an action key
+        // (sent to Rune as Return, which submits) where a longer one has Return.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or when {
+            secure -> InputType.TYPE_TEXT_VARIATION_PASSWORD
+            oneLine -> InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+            else -> InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        }
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
-            EditorInfo.IME_ACTION_NONE
+            (if (secure) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0) or
+            (if (oneLine) EditorInfo.IME_ACTION_DONE else EditorInfo.IME_ACTION_NONE)
         val selection = nativeImeSelection(handle)
         if (selection >= 0) {
             outAttrs.initialSelStart = (selection ushr 32).toInt()
@@ -374,6 +382,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeImeText(handle: Long): String?
     private external fun nativeImeSelection(handle: Long): Long
     private external fun nativePastePng(handle: Long, png: ByteArray): Long
+    private external fun nativeEditor(handle: Long): Int
     private external fun nativeTakeKeyboard(handle: Long): Int
     private external fun nativeWantsText(handle: Long): Boolean
     private external fun nativeA11yAvailable(handle: Long): Boolean
@@ -395,6 +404,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_HIDE = 2
         const val KEYBOARD_RESTART = 3
         const val KEYBOARD_SELECT = 4
+        const val EDITOR_SECURE = 1
+        const val EDITOR_ONE_LINE = 2
         val IMAGE_TYPES = arrayOf("image/png", "image/gif", "image/jpeg", "image/webp")
     }
 }

@@ -18,12 +18,13 @@ scripts/android-run.sh
 ```
 
 The script builds `examples/android-hello` (`examples/hello` as `libmain.so`), or with
-`--app gallery` `examples/android-gallery` (the rune-kit gallery), for the ABI of the device or
+`--app gallery` `examples/android-gallery` (the rune-kit gallery), or with `--app fields`
+`examples/android-fields` (a field of each kind, to check its keyboard), for the ABI of the device or
 emulator `adb` sees, packs it into the APK of `examples/android-host` with Gradle, installs it and
 starts it.
 
 ```text
-usage: android-run.sh [--app hello|gallery] [--release | --profile NAME] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
+usage: android-run.sh [--app hello|gallery|fields] [--release | --profile NAME] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
 ```
 
 Take numbers from `--profile perf`, as the other benchmarks do. `adb shell dumpsys SurfaceFlinger
@@ -89,7 +90,11 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   selection (`updateSelection`), takes text back to recompose it (`setComposingRegion`) and deletes
   around the caret by range. A keyboard's image (`commitContent`: a sticker, a GIF's first frame) is
   decoded off the UI thread and pasted as PNG. A hardware keyboard's keys arrive as Rune keys, Ctrl
-  shortcuts included.
+  shortcuts included. The keyboard is told what the field is (`EditorInfo`) and restarted when
+  focus goes to another kind: a one-line field has an action key, which submits as Return does,
+  where a longer one has Return; a secret field (`El::secure`) gets the keyboard as a password's,
+  with no correction, suggestion or learning, and its text goes in as typed keys since it takes no
+  composition.
 - **Fonts**: a character the app's fonts lack draws with the system's font for its script, from
   `/system/etc/fonts.xml` and `/system/fonts` (CJK, Arabic, Indic scripts, colour emoji, symbols),
   loaded the first time a text needs it.

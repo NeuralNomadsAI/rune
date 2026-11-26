@@ -1,0 +1,18 @@
+[package]
+name = "android-fields"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A field of each kind as the Android library `RuneActivity` loads (`libmain.so`), to check on
+# a device which keyboard each one raises; built by `scripts/android-run.sh --app fields`.
+[lib]
+name = "main"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rune = { workspace = true, default-features = true }
+
+[lints]
+workspace = true

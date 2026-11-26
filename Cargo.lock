@@ -148,6 +148,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "android-fields"
+version = "0.0.1"
+dependencies = [
+ "rune",
+]
+
+[[package]]
 name = "android-gallery"
 version = "0.0.1"
 dependencies = [

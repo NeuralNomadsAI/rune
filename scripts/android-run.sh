@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds an Android example (examples/android-hello, or android-gallery with --app gallery) into the
+# Builds an Android example (examples/android-hello, or android-gallery or android-fields with --app) into the
 # APK of examples/android-host, installs it on the device or emulator adb sees, and starts it.
 #
-#   scripts/android-run.sh [--app hello|gallery] [--release | --profile NAME] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
+#   scripts/android-run.sh [--app hello|gallery|fields] [--release | --profile NAME] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
 #
 # Numbers come from --profile perf, as the repository's other benchmarks do.
 #
@@ -22,7 +22,7 @@ while [ $# -gt 0 ]; do
     --profile) profile="$2"; shift ;;
     --target) target="$2"; shift ;;
     --build-only) build_only=1 ;;
-    *) echo "usage: $0 [--app hello|gallery] [--release | --profile NAME] [--target TRIPLE] [--build-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--app hello|gallery|fields] [--release | --profile NAME] [--target TRIPLE] [--build-only]" >&2; exit 2 ;;
   esac
   shift
 done

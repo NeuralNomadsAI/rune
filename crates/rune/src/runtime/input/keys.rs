@@ -617,6 +617,14 @@ impl RuntimeCore {
         self.focused_input().filter(|i| !i.edit.is_secure()).and_then(|i| i.edit.preedit())
     }
 
+    /// Whether the focused field is one line, for a platform's keyboard to show an action key
+    /// in place of Return; `None` when no field takes text.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn focused_input_single_line(&self) -> Option<bool> {
+        if self.focused_input_read_only() || self.focused_input_disabled() { return None; }
+        self.focused_input().map(|i| i.single_line)
+    }
+
     /// Whether the focused editor requires secure native keyboard input.
     pub fn has_secure_focus(&self) -> bool {
         self.focused_input().is_some_and(|i| i.edit.is_secure())

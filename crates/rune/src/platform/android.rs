@@ -15,6 +15,9 @@ macro_rules! call {
     };
 }
 
+pub(crate) mod editor;
+#[cfg(test)]
+mod editor_tests;
 #[cfg(target_os = "android")]
 mod host;
 pub(crate) mod ime_window;

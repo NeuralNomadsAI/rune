@@ -288,6 +288,13 @@ impl View {
         self.ime.wants_text()
     }
 
+    /// `commitText`: text the keyboard typed or the user picked from its suggestions.
+    pub(super) fn commit(&mut self, text: String) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        super::editor::commit(host.core(), text);
+        self.step(Event::Frame, None)
+    }
+
     pub(super) fn ime_bridge(&self) -> &ImeBridge {
         &self.ime
     }

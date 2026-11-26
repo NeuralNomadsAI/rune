@@ -28,6 +28,7 @@ members = [
     "crates/rune-taffy",
     "themes/opencode",
     "examples/hello",
+    "examples/android-fields",
     "examples/android-hello",
     "examples/android-gallery",
     "examples/launch-floor",

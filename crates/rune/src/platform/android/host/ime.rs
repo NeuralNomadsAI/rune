@@ -1,8 +1,9 @@
 //! The input method side of one `RuneView`: whether a field takes text, what the keyboard
 //! should do after a frame, and the window of text the input method was last shown.
 
+use super::super::editor::Editor;
 use super::super::ime_window::ImeWindow;
-use crate::input::host_events::{ImeSync, ime_sync_step};
+use crate::input::host_events::{ImeSync, ime_sync_state};
 use crate::runtime::RuntimeCore;
 use crate::{ClipboardContent, Ime};
 
@@ -13,7 +14,8 @@ pub(in crate::platform::android) enum Keyboard {
     Unchanged = 0,
     Show = 1,
     Hide = 2,
-    /// A new field or paragraph, or a reset composition: `InputMethodManager.restartInput`.
+    /// A new field, kind of field or paragraph, or a reset composition:
+    /// `InputMethodManager.restartInput`.
     Restart = 3,
     /// The selection or the text around it changed: `InputMethodManager.updateSelection`.
     Select = 4,
@@ -37,21 +39,31 @@ pub(in crate::platform::android) struct ImeBridge {
     keyboard: Keyboard,
     /// The last window of text shown, kept through a composition (Rune shows none then).
     window: Option<ImeWindow>,
+    /// What the keyboard was last told of the focused field.
+    editor: Option<Editor>,
 }
 
 impl ImeBridge {
     pub(in crate::platform::android) fn after_frame(&mut self, core: &mut RuntimeCore) {
-        let step = ime_sync_step(core, &mut self.sync, true);
+        let (reset, area) = ime_sync_state(core);
+        let editor = Editor::focused(core);
+        // A secret field has no input method area, as it takes no composition; it takes the
+        // keyboard all the same, which on a phone is the only one, told it is a password's.
+        let area = area.or(editor.filter(|e| e.secure).map(|_| [0.0; 4]));
+        let step = self.sync.step(reset, area, false, true, core.window_scale());
         let window = core.ime_text().map(ImeWindow::new);
         let next = match (step.set_allowed, step.cancel, &self.window, &window) {
             (Some(true), ..) => Keyboard::Show,
             (Some(false), ..) => Keyboard::Hide,
             (None, true, ..) => Keyboard::Restart,
+            // Focus went from one kind of field to another with the keyboard up.
+            (None, false, ..) if self.sync.is_enabled() && editor != self.editor => Keyboard::Restart,
             (None, false, Some(old), Some(new)) if !old.same_origin(new) => Keyboard::Restart,
             (None, false, Some(old), Some(new)) if old != new => Keyboard::Select,
             _ => Keyboard::Unchanged,
         };
         self.keyboard = self.keyboard.then(next);
+        self.editor = editor;
         if !self.sync.is_enabled() {
             self.window = None;
         } else if window.is_some() {
@@ -65,6 +77,11 @@ impl ImeBridge {
 
     pub(in crate::platform::android) fn wants_text(&self) -> bool {
         self.sync.is_enabled()
+    }
+
+    /// The focused field's kind, for `EditorInfo`.
+    pub(in crate::platform::android) fn editor(&self) -> Option<Editor> {
+        self.editor
     }
 
     pub(in crate::platform::android) fn window(&self) -> Option<&ImeWindow> {

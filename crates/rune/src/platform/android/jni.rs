@@ -215,7 +215,7 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeCommit(env: *mut JNIEnv, _:
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
     // SAFETY: `text` is the input method's live string.
     let text = unsafe { java_string(env, text) };
-    next(h.view.ime(crate::Ime::Commit(text)))
+    next(h.view.commit(text))
 }
 
 /// The composition so far (`setComposingText`), with the cursor at its end; empty ends it.
@@ -286,6 +286,13 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativePastePng(env: *mut JNIEnv, 
         bytes
     };
     next(h.view.with_ime(|_, core| ImeBridge::paste_png(core, bytes)).unwrap_or(Next::Idle))
+}
+
+/// The focused field's kind for `EditorInfo` (`Editor::code`), 0 without one.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeEditor(_: *mut JNIEnv, _: jobject, h: jlong) -> jint {
+    // SAFETY: `h` comes from `nativeNew`.
+    unsafe { handle(h) }.and_then(|h| h.view.ime_bridge().editor()).map_or(0, |e| e.code())
 }
 
 /// What the keyboard should do now (`Keyboard` as an int), once.
