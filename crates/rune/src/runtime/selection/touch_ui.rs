@@ -37,8 +37,9 @@ pub(crate) enum Handle {
 #[derive(Clone, Debug)]
 pub(in crate::runtime) enum Grab {
     /// The focused field's selection from byte `fixed` (`start`: by its start handle), or its
-    /// caret.
-    Field { path: String, fixed: Option<usize>, start: bool },
+    /// caret; where the end was last asked to go and the height of the finger holding its
+    /// handle; and whether an edge scroll's step left the end to be put there again (`extend`).
+    Field { path: String, fixed: Option<usize>, start: bool, point: (f32, f32), finger_y: f32, extend: bool },
     /// The selectable text's selection, held as a press at its other end.
     Text(TextGrab),
 }
@@ -84,7 +85,7 @@ impl RuntimeCore {
                 Handle::End if a < b => Some(a),
                 _ => return false,
             };
-            Grab::Field { path: self.tree.nodes[i].path.clone(), fixed, start: handle == Handle::Start }
+            Grab::Field { path: self.tree.nodes[i].path.clone(), fixed, start: handle == Handle::Start, point: (0.0, 0.0), finger_y: 0.0, extend: false }
         } else {
             // A selection whose far part scrolled out of a virtual list keeps its ends.
             if self.selection_spans_unmounted() { return false; }
@@ -105,8 +106,8 @@ impl RuntimeCore {
     }
 
     /// The held handle's end goes to the text under window point (x, y); the finger holding it
-    /// is at height `finger_y`. Selectable text scrolls its viewport while the handle is at an
-    /// edge of it (`edge_scroll.rs`).
+    /// is at height `finger_y`. Selectable text and a field of several lines scroll their
+    /// viewport while the handle is at an edge of it (`edge_scroll.rs`).
     pub(crate) fn drag_handle(&mut self, app: &mut dyn AppDriver, x: f32, y: f32, finger_y: f32) {
         match &mut self.edit.selectable.grab {
             Some(Grab::Text(grab)) => {
@@ -114,12 +115,36 @@ impl RuntimeCore {
                 self.drag_text_handle();
                 self.edge_scroll_handle_moved();
             }
-            Some(Grab::Field { path, fixed, start }) => {
-                let (path, fixed, start) = (path.clone(), *fixed, *start);
-                self.drag_field_end(app, &path, fixed, start, x, y);
+            Some(Grab::Field { point, finger_y: finger, extend, .. }) => {
+                (*point, *finger, *extend) = ((x, y), finger_y, true);
+                self.extend_field_handle(app);
+                self.edge_scroll_handle_moved();
             }
             None => {}
         }
+    }
+
+    /// Puts the field's held end where its handle was last asked to go, over the layout as
+    /// drawn: after the handle moved, and at the frame after an edge scroll's step.
+    pub(in crate::runtime) fn extend_field_handle(&mut self, app: &mut dyn AppDriver) {
+        let Some(Grab::Field { path, fixed, start, point, extend, .. }) = &mut self.edit.selectable.grab else { return };
+        if !std::mem::take(extend) { return }
+        let (path, fixed, start, (x, y)) = (path.clone(), *fixed, *start, *point);
+        self.drag_field_end(app, &path, fixed, start, x, y);
+    }
+
+    /// Where a held handle's end was last asked to go, and the height of the finger holding it.
+    pub(in crate::runtime) fn handle_at(&self) -> Option<((f32, f32), f32)> {
+        match self.edit.selectable.grab.as_ref()? {
+            Grab::Text(grab) => Some((grab.point, grab.finger_y)),
+            Grab::Field { point, finger_y, .. } => Some((*point, *finger_y)),
+        }
+    }
+
+    /// The field of several lines whose handle is held.
+    pub(in crate::runtime) fn field_grab(&self) -> Option<usize> {
+        let Some(Grab::Field { path, .. }) = &self.edit.selectable.grab else { return None };
+        self.live(path).filter(|&i| self.tree.nodes[i].input.as_ref().is_some_and(|inp| !inp.single_line))
     }
 
     /// The selectable text's held handle, if one is.
@@ -144,7 +169,11 @@ impl RuntimeCore {
     }
 
     pub(crate) fn release_handle(&mut self) {
-        if matches!(self.edit.selectable.grab.take(), Some(Grab::Text(_))) { self.select_step(phase::Event::Release); }
+        match self.edit.selectable.grab.take() {
+            Some(Grab::Text(_)) => self.select_step(phase::Event::Release),
+            Some(Grab::Field { .. }) => self.edit.stop_edge_scroll(),
+            None => {}
+        }
     }
 
     fn drag_field_end(&mut self, app: &mut dyn AppDriver, path: &str, fixed: Option<usize>, start: bool, x: f32, y: f32) {

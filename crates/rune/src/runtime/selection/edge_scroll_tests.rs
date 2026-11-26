@@ -931,3 +931,32 @@ fn a_selection_handle_held_at_the_bottom_edge_scrolls_and_extends() {
     assert_eq!(offset(&rt), stopped, "letting go stops it");
     assert!(rt.selected_text().is_some_and(|t| t.starts_with("row 00\nrow 01\n")));
 }
+
+#[test]
+fn a_field_handle_held_at_the_bottom_edge_scrolls_the_field_and_extends() {
+    use crate::runtime::touch_ui::Handle;
+    let mut rt = field_window(80, false);
+    rt.pointer_down(10.0, 10.0);
+    rt.pointer_up(10.0, 10.0);
+    rt.pointer_leave();
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| s.edit.set_selection(0, 4));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.edit.focused && rt.state.edit.range() == (0, 4));
+    assert!(rt.grab_handle(Handle::End));
+    // The end is asked to a line in view; the finger holding its handle is past the bottom edge.
+    rt.drag_handle(40.0, BOTTOM - 10.0, BOTTOM + 40.0);
+    let (mut last_offset, mut last_focus) = (field_offset(&rt), rt.state.edit.focus);
+    for tick in 0..20 {
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.edit.anchor, 0, "tick {tick}");
+        assert!(field_offset(&rt) > last_offset && rt.state.edit.focus >= last_focus, "tick {tick}: offset {} focus {}", field_offset(&rt), rt.state.edit.focus);
+        (last_offset, last_focus) = (field_offset(&rt), rt.state.edit.focus);
+    }
+    assert!(last_focus > 200, "the selection followed the field: {last_focus}");
+    rt.release_handle();
+    let stopped = field_offset(&rt);
+    for _ in 0..5 { rt.frame(1.0 / 60.0); }
+    assert_eq!(field_offset(&rt), stopped, "letting go stops it");
+    assert_eq!(rt.wake_deadline(), None);
+}
