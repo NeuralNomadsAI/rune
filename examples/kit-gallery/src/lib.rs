@@ -268,7 +268,9 @@ fn view(s: &G, cx: &mut Cx<G>) -> El {
     let body = stories::render(s, k, &mut overlays);
     stories::field_menu::mount_live_field_menu(s, k, &mut overlays);
     let frame = if s.story == "index" {
-        col().key("frame").w_full().h_full().fill(k.c.page).child(body)
+        // Clear of a phone's status bar, cutout and keyboard; zero on a desktop.
+        let [top, right, bottom, left] = cx.safe_area();
+        col().key("frame").w_full().h_full().pt(top).pr(right).pb(bottom).pl(left).fill(k.c.page).child(body)
     } else {
         // Storybook's decorator: the page colour and 24 px of padding around the story.
         col().key("frame").fill(k.c.page).padding(24.0).child(body)
