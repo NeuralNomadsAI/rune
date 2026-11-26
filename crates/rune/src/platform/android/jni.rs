@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use jni_sys::{JNIEnv, JavaVM, jboolean, jbyteArray, jfloat, jfloatArray, jint, jintArray, jlong, jmethodID, jobject, jstring};
 
 use super::host::{Next, View};
-use super::host_ime::ImeBridge;
+use super::host::ime::ImeBridge;
 use super::lifecycle::{Event, Insets};
 
 unsafe extern "C" {

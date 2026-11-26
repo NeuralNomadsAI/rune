@@ -6,7 +6,7 @@ use std::ptr::null_mut;
 
 use jni_sys::{JNIEnv, jfloat, jfloatArray, jint, jlong, jobject, jstring};
 
-use super::host_selection::Toolbar;
+use super::host::selection::Toolbar;
 use super::jni::{handle, next};
 use crate::runtime::touch_ui::{End, Ends, Handle};
 
