@@ -1,0 +1,1 @@
+- `scripts/android-run.sh --profile NAME` builds an Android example with a Cargo profile, so Android numbers come from `--profile perf` as the other benchmarks' do.

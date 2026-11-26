@@ -23,8 +23,12 @@ emulator `adb` sees, packs it into the APK of `examples/android-host` with Gradl
 starts it.
 
 ```text
-usage: android-run.sh [--app hello|gallery] [--release] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
+usage: android-run.sh [--app hello|gallery] [--release | --profile NAME] [--target aarch64-linux-android|x86_64-linux-android] [--build-only]
 ```
+
+Take numbers from `--profile perf`, as the other benchmarks do. `adb shell dumpsys SurfaceFlinger
+--latency` on the app's `SurfaceView` layer gives each frame's present time. An emulator's
+numbers say nothing of a device's.
 
 ## Your app
 
