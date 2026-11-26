@@ -60,7 +60,9 @@ internal class RuneSelection(private val view: View, private val events: Events)
         val oneLine = a[6] < a[3]
         content.set(
             if (oneLine) min(a[1], a[5]).roundToInt() else 0, a[2].roundToInt(),
-            if (oneLine) max(a[1], a[5]).roundToInt() else view.width, a[7].roundToInt() + end.height,
+            // Down to the foot of the handles' touch targets: a toolbar under the selection
+            // would otherwise lie over them and take the finger reaching for a handle.
+            if (oneLine) max(a[1], a[5]).roundToInt() else view.width, a[7].roundToInt() + end.reach,
         )
         toolbar?.invalidateContentRect()
         val held = arrayOf(start, end, caret).firstOrNull { it.held }
@@ -162,6 +164,8 @@ internal class RuneSelection(private val view: View, private val events: Events)
         /** Blank on each side of the drawable, and below it. */
         private val side = max(0, target - width) / 2
         private val below = max(0, target - height)
+        /** How far under its end the handle's touch target reaches. */
+        val reach = height + below
         private val window = PopupWindow(ImageView(view.context).apply {
             setImageDrawable(icon)
             scaleType = ImageView.ScaleType.CENTER
