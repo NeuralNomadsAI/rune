@@ -41,7 +41,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private val later = Runnable { schedule(0) }
     private val keyboard = context.getSystemService(InputMethodManager::class.java)
     private val selectionUi = RuneSelection(this, object : RuneSelection.Events {
-        override fun handle(which: Int, phase: Int, x: Float, y: Float) = schedule(nativeHandle(handle, which, phase, x, y))
+        override fun handle(which: Int, phase: Int, x: Float, y: Float, fingerY: Float) = schedule(nativeHandle(handle, which, phase, x, y, fingerY))
         override fun picked(index: Int) = schedule(nativeToolbarPicked(handle, index))
     })
 
@@ -68,8 +68,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         hasSurface = false
-        cancelFrames()
         selectionUi.hide()
+        cancelFrames()
         nativeSurfaceDestroyed(handle)
     }
 
@@ -286,8 +286,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     }
 
     fun pause() {
-        cancelFrames()
         selectionUi.hide()
+        cancelFrames()
         nativePaused(handle)
     }
 
@@ -298,8 +298,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
 
     /** Frees the app; the view is unusable afterwards. */
     fun destroy() {
-        cancelFrames()
         selectionUi.hide()
+        cancelFrames()
         nativeDrop(handle)
         handle = 0L
     }
@@ -383,7 +383,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeA11yHover(handle: Long, action: Int, x: Float, y: Float): Boolean
     private external fun nativeTakeHandles(handle: Long): FloatArray?
     private external fun nativeTakeToolbar(handle: Long): String?
-    private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float): Long
+    private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float, fingerY: Float): Long
     private external fun nativeToolbarPicked(handle: Long, index: Int): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
     private external fun nativeBack(handle: Long): Boolean

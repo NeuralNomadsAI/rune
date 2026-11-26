@@ -901,3 +901,33 @@ fn single_line_text_field_does_not_vertically_edge_scroll_enclosing_viewport() {
     assert!(!rt.edit.selectable.edge.running());
     assert_eq!(rt.wake_deadline(), None);
 }
+
+#[test]
+fn a_selection_handle_held_at_the_bottom_edge_scrolls_and_extends() {
+    use crate::runtime::touch_ui::Handle;
+    let mut rt = window(PLAIN);
+    rt.pointer_down(2.0, 20.0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(40.0, 20.0);
+    rt.pointer_up(40.0, 20.0);
+    rt.pointer_leave();
+    rt.frame(1.0 / 60.0);
+    assert_eq!(ends(&rt), (0, 0));
+    assert!(rt.grab_handle(Handle::End));
+    // The end is asked to a row in view; the finger holding its handle is past the bottom edge.
+    rt.drag_handle(40.0, BOTTOM - 10.0, BOTTOM + 40.0);
+    let (mut last_offset, mut last_focus) = (offset(&rt), 0);
+    for tick in 0..20 {
+        rt.frame(1.0 / 60.0);
+        let (anchor, focus) = ends(&rt);
+        assert_eq!(anchor, 0, "tick {tick}");
+        assert!(offset(&rt) > last_offset && focus >= last_focus, "tick {tick}: offset {} focus {focus}", offset(&rt));
+        (last_offset, last_focus) = (offset(&rt), focus);
+    }
+    assert!(last_focus >= 5, "the selection followed the list: {last_focus}");
+    rt.release_handle();
+    let stopped = offset(&rt);
+    for _ in 0..5 { rt.frame(1.0 / 60.0); }
+    assert_eq!(offset(&rt), stopped, "letting go stops it");
+    assert!(rt.selected_text().is_some_and(|t| t.starts_with("row 00\nrow 01\n")));
+}

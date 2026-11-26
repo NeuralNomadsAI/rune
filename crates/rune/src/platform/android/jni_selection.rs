@@ -52,10 +52,10 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeToolbar(env: *mut JNIEn
 }
 
 /// A handle's finger: `which` 0 the start, 1 the end, 2 the caret; `phase` 0 down, 1 moved,
-/// 2 up, 3 up with no toolbar to bring; (x, y) where its end should go, in the view's device
-/// pixels.
+/// 2 up, 3 up with no toolbar to bring; (x, y) where its end should go and `finger_y` the
+/// finger's height, in the view's device pixels.
 #[unsafe(no_mangle)]
-extern "system" fn Java_ly_anoma_rune_RuneView_nativeHandle(_: *mut JNIEnv, _: jobject, h: jlong, which: jint, phase: jint, x: jfloat, y: jfloat) -> jlong {
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeHandle(_: *mut JNIEnv, _: jobject, h: jlong, which: jint, phase: jint, x: jfloat, y: jfloat, finger_y: jfloat) -> jlong {
     // SAFETY: `h` comes from `nativeNew`.
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
     let which = match which {
@@ -63,7 +63,7 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeHandle(_: *mut JNIEnv, _: j
         1 => Handle::End,
         _ => Handle::Caret,
     };
-    next(h.view.handle(which, phase, x, y))
+    next(h.view.handle(which, phase, x, y, finger_y))
 }
 
 /// The toolbar closed by itself: the item at `index` was picked, or none (negative).

@@ -14,6 +14,10 @@ pub(crate) struct State {
     toolbar: bool,
     /// A finger on the view shut the toolbar, and may bring it back when it lifts.
     parted: bool,
+    /// A finger landed with a selection's two ends showing, or not.
+    ranged: bool,
+    /// A finger lifted as a tap, and the frame it changed is still to come.
+    tapped: bool,
 }
 
 impl State {
@@ -60,13 +64,20 @@ pub(crate) fn step(state: &mut State, event: Event) -> Effects<Effect> {
                 out.push(Effect::Handles(ends));
             }
             if menu { state.toolbar = true } else if collapsed { shut(state, &mut out) }
+            // A tap made the selection (a second tap's word, a control that selects): it gets
+            // its toolbar, as a long press's does.
+            let tapped = std::mem::take(&mut state.tapped);
+            if tapped && !state.ranged && !state.toolbar && matches!(ends, Some(Ends::Range { .. })) { out.push(Effect::Ask) }
         }
         Event::Touch => {
             state.parted = state.toolbar;
+            state.ranged = matches!(state.shown, Some(Ends::Range { .. }));
+            state.tapped = false;
             shut(state, &mut out);
         }
         // A scroll under the selection hid its toolbar for as long as it lasted.
         Event::Lift { panned } => {
+            state.tapped = !panned;
             if std::mem::take(&mut state.parted) && panned { out.push(Effect::Ask) }
         }
         Event::Grab => shut(state, &mut out),
