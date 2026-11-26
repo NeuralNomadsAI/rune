@@ -1,10 +1,11 @@
-//! JNI entry points for `RuneView`'s selection handles and toolbar, on the UI thread.
+//! JNI entry points for what `RuneView` takes after a frame beside the keyboard: its selection
+//! handles and toolbar, and the haptics to play; on the UI thread.
 
 #![allow(unsafe_code)]
 
 use std::ptr::null_mut;
 
-use jni_sys::{JNIEnv, jfloat, jfloatArray, jint, jlong, jobject, jstring};
+use jni_sys::{JNIEnv, jfloat, jfloatArray, jint, jintArray, jlong, jobject, jstring};
 
 use super::host::selection::Toolbar;
 use super::jni::{handle, next};
@@ -72,4 +73,18 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeToolbarPicked(_: *mut JNIEn
     // SAFETY: `h` comes from `nativeNew`.
     let Some(h) = (unsafe { handle(h) }) else { return -1 };
     next(h.view.toolbar_picked(index))
+}
+
+/// The haptics the app asked for since the last call (`haptics::code`), oldest first, else null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeHaptics(env: *mut JNIEnv, _: jobject, h: jlong) -> jintArray {
+    // SAFETY: `h` comes from `nativeNew`.
+    let codes = unsafe { handle(h) }.map(|h| h.view.take_haptics()).unwrap_or_default();
+    if codes.is_empty() { return null_mut() }
+    // SAFETY: a new array of `codes.len()` ints, filled from a buffer of that length.
+    unsafe {
+        let array = call!(env, NewIntArray(codes.len() as i32));
+        if !array.is_null() { call!(env, SetIntArrayRegion(array, 0, codes.len() as i32, codes.as_ptr())) }
+        array
+    }
 }

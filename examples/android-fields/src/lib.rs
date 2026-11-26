@@ -1,9 +1,10 @@
 //! A field of each kind, to check on a device which keyboard each one raises: several lines,
-//! one line (its action key submits) and a secret. `scripts/android-run.sh --app fields`.
+//! one line (its action key submits, with a haptic) and a secret.
+//! `scripts/android-run.sh --app fields`.
 
 
 use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, col, text, text_input};
+use rune::{AppSpec, Cx, El, Haptic, HapticOutcome, ScrollSpec, TextEdit, col, text, text_input};
 
 struct State {
     note: TextEdit,
@@ -33,7 +34,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         col().key("page").w_full().h_full().padding(20.0).gap(18.0).scroll(ScrollSpec { stick_bottom: false })
             .child(field("Note", text_input(&s.note, type_::BODY).key("note").on_edit(|s: &mut State| &mut s.note).min_h(64.0), &t))
             .child(field("Name", text_input(&s.name, type_::BODY).single_line().key("name").on_edit(|s: &mut State| &mut s.name)
-                .on_submit(|s: &mut State, _| s.submitted = s.name.text.clone()), &t))
+                .on_submit(|s: &mut State, tx| {
+                    s.submitted = s.name.text.clone();
+                    tx.haptic(Haptic::Notify(HapticOutcome::Success));
+                }), &t))
             .child(field("Password", text_input(&s.secret, type_::BODY).single_line().secure().key("secret").on_edit(|s: &mut State| &mut s.secret), &t))
             .child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)),
     )
@@ -63,6 +67,7 @@ mod tests {
         rt.key(rune::KeyEvent { key: rune::Key::Enter, mods: rune::Mods::default() });
         rt.frame(0.0);
         assert_eq!(rt.state.submitted, "Ada");
+        assert_eq!(rt.take_haptics(), [Haptic::Notify(HapticOutcome::Success)]);
         assert!(rt.state.secret.is_secure());
     }
 }

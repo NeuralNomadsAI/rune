@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.view.ActionMode
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
@@ -51,6 +52,7 @@ internal class RuneSelection(private val view: View, private val events: Events)
 
     /** The ends moved: the kind (0 none, 1 caret, 2 range), then each end's x, top, bottom, shown. */
     fun place(a: FloatArray) {
+        val before = ends
         ends = a
         val kind = a[0].toInt()
         start.show(kind == RANGE && a[4] != 0f, a[1], a[2], a[3])
@@ -64,6 +66,11 @@ internal class RuneSelection(private val view: View, private val events: Events)
         )
         toolbar?.invalidateContentRect()
         val held = arrayOf(start, end, caret).firstOrNull { it.held }
+        // A dragged handle ticks as its end goes to another character, as Android's own do.
+        if (held != null && before != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            val i = if (held === end) 5 else 1
+            if (before[i] != a[i] || before[i + 1] != a[i + 1]) view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+        }
         if (held != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             @Suppress("DEPRECATION")
             val glass = magnifier ?: Magnifier(view).also { magnifier = it }

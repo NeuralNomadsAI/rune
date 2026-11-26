@@ -271,6 +271,11 @@ impl View {
         }))
     }
 
+    /// The haptics handlers asked for since the last call (`haptics::code`), for the view to play.
+    pub(super) fn take_haptics(&mut self) -> Vec<i32> {
+        self.host.as_mut().map(|host| super::haptics::take(host.core())).unwrap_or_default()
+    }
+
     pub(super) fn take_toolbar(&mut self) -> Option<Toolbar> {
         self.selection.take_toolbar()
     }

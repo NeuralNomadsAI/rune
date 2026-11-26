@@ -95,6 +95,11 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   where a longer one has Return; a secret field (`El::secure`) gets the keyboard as a password's,
   with no correction, suggestion or learning, and its text goes in as typed keys since it takes no
   composition.
+- **Haptics**: what handlers ask for with `Tx::haptic` is played after the frame with
+  `View.performHapticFeedback` (the table in `crates/rune/src/haptics.rs`), which needs no
+  permission and follows the system's touch feedback setting. The view adds what Android's own
+  text gives: a long press that brings the text's menu is felt, and a dragged selection handle
+  ticks as its end moves.
 - **Fonts**: a character the app's fonts lack draws with the system's font for its script, from
   `/system/etc/fonts.xml` and `/system/fonts` (CJK, Arabic, Indic scripts, colour emoji, symbols),
   loaded the first time a text needs it.

@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.Choreographer
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -36,6 +37,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private var handle = 0L
     private var hasSurface = false
     private var frameQueued = false
+    /** A finger is on the view. */
+    private var touching = false
     private val choreographer = Choreographer.getInstance()
     private val main = Handler(Looper.getMainLooper())
     private val later = Runnable { schedule(0) }
@@ -79,6 +82,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        touching = event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
         val n = event.pointerCount
         val ids = IntArray(n) { event.getPointerId(it) }
         val xs = FloatArray(n)
@@ -338,7 +342,12 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         if (handle == 0L) return
         applyKeyboard()
         nativeTakeHandles(handle)?.let(selectionUi::place)
-        nativeTakeToolbar(handle)?.let(selectionUi::toolbar)
+        nativeTakeToolbar(handle)?.let {
+            // A long press that brings the text's menu is felt, as on Android's own text.
+            if (it.isNotEmpty() && touching) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            selectionUi.toolbar(it)
+        }
+        nativeTakeHaptics(handle)?.forEach(::haptic)
         when {
             next == 0L -> if (!frameQueued) {
                 frameQueued = true
@@ -349,6 +358,21 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
                 main.postDelayed(later, next)
             }
         }
+    }
+
+    /** Plays one of Rune's haptics (`Tx::haptic`) with what this API level has for it. */
+    private fun haptic(code: Int) {
+        val sdk = Build.VERSION.SDK_INT
+        performHapticFeedback(when (code) {
+            HAPTIC_SELECTION -> if (sdk >= 34) HapticFeedbackConstants.SEGMENT_TICK else HapticFeedbackConstants.CLOCK_TICK
+            HAPTIC_LIGHT -> HapticFeedbackConstants.VIRTUAL_KEY
+            HAPTIC_MEDIUM, HAPTIC_WARNING -> HapticFeedbackConstants.KEYBOARD_TAP
+            HAPTIC_HEAVY, HAPTIC_RIGID -> HapticFeedbackConstants.CONTEXT_CLICK
+            HAPTIC_SOFT -> if (sdk >= 34) HapticFeedbackConstants.SEGMENT_FREQUENT_TICK else HapticFeedbackConstants.CLOCK_TICK
+            HAPTIC_SUCCESS -> if (sdk >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY
+            HAPTIC_ERROR -> if (sdk >= 30) HapticFeedbackConstants.REJECT else HapticFeedbackConstants.LONG_PRESS
+            else -> return
+        })
     }
 
     private fun cancelFrames() {
@@ -392,6 +416,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeA11yHover(handle: Long, action: Int, x: Float, y: Float): Boolean
     private external fun nativeTakeHandles(handle: Long): FloatArray?
     private external fun nativeTakeToolbar(handle: Long): String?
+    private external fun nativeTakeHaptics(handle: Long): IntArray?
     private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float, fingerY: Float): Long
     private external fun nativeToolbarPicked(handle: Long, index: Int): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
@@ -406,6 +431,15 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_SELECT = 4
         const val EDITOR_SECURE = 1
         const val EDITOR_ONE_LINE = 2
+        const val HAPTIC_SELECTION = 0
+        const val HAPTIC_LIGHT = 1
+        const val HAPTIC_MEDIUM = 2
+        const val HAPTIC_HEAVY = 3
+        const val HAPTIC_SOFT = 4
+        const val HAPTIC_RIGID = 5
+        const val HAPTIC_SUCCESS = 6
+        const val HAPTIC_WARNING = 7
+        const val HAPTIC_ERROR = 8
         val IMAGE_TYPES = arrayOf("image/png", "image/gif", "image/jpeg", "image/webp")
     }
 }

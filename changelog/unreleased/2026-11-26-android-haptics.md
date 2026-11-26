@@ -1,0 +1,1 @@
+- Android: haptics. `RuneView` plays what handlers ask for with `Tx::haptic` after each frame through `View.performHapticFeedback` (no permission, and the system's touch feedback setting is followed); they were dropped. A long press that brings a text's menu is felt and a dragged selection handle ticks as its end moves, as on Android's own text.

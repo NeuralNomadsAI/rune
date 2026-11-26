@@ -23,7 +23,7 @@
 //!
 //! # Platform mapping
 //!
-//! | Rune [`Haptic`] | iOS (embedding host after `LayerHost::frame()`) | Android (embedding host on main thread via `View.performHapticFeedback`) | macOS (Rune windows & overlays via `NSHapticFeedbackManager`) | Windows / Linux / Web |
+//! | Rune [`Haptic`] | iOS (embedding host after `LayerHost::frame()`) | Android (`RuneView` via `View.performHapticFeedback`) | macOS (Rune windows & overlays via `NSHapticFeedbackManager`) | Windows / Linux / Web |
 //! | --- | --- | --- | --- | --- |
 //! | `Selection` | `UISelectionFeedbackGenerator.selectionChanged()` | `SEGMENT_TICK` (API 34+, fallback `CLOCK_TICK`) | `LevelChange` (`PerformanceTime::Now`) | no-op |
 //! | `Impact(Light)` | `UIImpactFeedbackGenerator(style: .light, view:).impactOccurred()` | `VIRTUAL_KEY` | `Alignment` (`PerformanceTime::Now`) | no-op |
@@ -37,8 +37,8 @@
 //!
 //! - **iOS**: prefer iOS 17.5+ view-bound `UIFeedbackGenerator(view:)` initialisers and call
 //!   `prepare()` on touch-down or after firing; UIKit honours System Haptics and Low Power Mode.
-//! - **Android**: use `HapticFeedbackConstants` / `HapticFeedbackConstantsCompat` on the host
-//!   `View` so no `VIBRATE` permission is needed.
+//! - **Android**: `RuneView` plays them after each frame with `View.performHapticFeedback`, so
+//!   no `VIBRATE` permission is needed and the system's touch feedback setting is followed.
 //! - **macOS**: Rune's own shown windows and overlays drain and perform haptics right after
 //!   presentation (and on unchanged frames for boundary bumps). Hidden, covered or prewarming
 //!   windows discard pending haptics. AppKit has no notification patterns, so `Notify(_)` is a
@@ -314,7 +314,8 @@ impl<S: 'static> crate::Runtime<S> {
     ///
     /// At most 32 requests are kept (oldest dropped first), with a 30 ms same-kind cooldown on
     /// the runtime clock. Shown macOS windows and overlays drain and play them automatically via
-    /// `NSHapticFeedbackManager`; Windows, Linux and Web windows drain and discard them.
+    /// `NSHapticFeedbackManager`, and Android's `RuneView` via `View.performHapticFeedback`;
+    /// Windows, Linux and Web windows drain and discard them.
     ///
     /// ```
     /// # use rune::{Env, Haptic, Runtime, el};
