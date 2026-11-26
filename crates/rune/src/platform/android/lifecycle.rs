@@ -117,11 +117,15 @@ pub(crate) fn safe_area(insets: Insets, density: f32) -> [f32; 4] {
     std::array::from_fn(|i| insets.bars[i].max(insets.ime[i]).max(0.0) / density)
 }
 
+/// How far above the keyboard the caret's line is kept, in points: the field's own padding and
+/// border show, where a line kept flush has them under the keyboard.
+pub(crate) const KEYBOARD_GAP: f32 = 16.0;
+
 /// The part of a window of `px` device pixels the keyboard leaves in sight, top and bottom in
-/// points, for the runtime to keep a focused field's caret in; `None` while it covers no more
-/// than the system bars do.
+/// points, less [`KEYBOARD_GAP`], for the runtime to keep a focused field's caret in; `None`
+/// while it covers no more than the system bars do.
 pub(crate) fn visible_band(insets: Insets, px: (u32, u32), density: f32) -> Option<(f32, f32)> {
     let density = if density.is_finite() && density > 0.0 { density } else { 1.0 };
     let (height, keyboard) = (px.1 as f32, insets.ime[2]);
-    (keyboard > insets.bars[2].max(0.0) && keyboard < height).then(|| (0.0, (height - keyboard) / density))
+    (keyboard > insets.bars[2].max(0.0) && keyboard < height).then(|| (0.0, ((height - keyboard) / density - KEYBOARD_GAP).max(0.0)))
 }

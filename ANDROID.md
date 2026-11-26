@@ -60,7 +60,8 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Keyboard**: the activity asks for `adjustNothing`, so the keyboard covers the window
   instead of resizing it, and only raises the bottom safe area. A keyboard opening in portrait
   never reads as a wide, short window. When it opens, the focused field's scroll viewports move
-  just far enough to show its caret above it, as on the web; an app pads its content by
+  just far enough to show its caret 16 points above it (so the field's padding and border show
+  too), as on the web; an app pads its content by
   `Cx::safe_area` so a field at the page's end has room to move.
 - **Appearance**: the system's dark mode at launch and on change.
 - **Touch**: every finger of a `MotionEvent` (with the samples batched since the last frame, for
