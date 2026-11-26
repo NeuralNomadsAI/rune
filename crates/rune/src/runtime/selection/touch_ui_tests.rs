@@ -279,3 +279,50 @@ fn a_long_press_past_a_fields_text_places_the_caret_and_offers_paste() {
     assert!(show.menu.find("paste").unwrap().is_enabled() && !show.menu.find("copy").unwrap().is_enabled());
     assert!(matches!(rt.selection_ends(), Some(Ends::Caret(_))));
 }
+
+fn tap(rt: &mut Runtime<S>, x: f32, y: f32) {
+    rt.touch(1, TouchPhase::Started, x, y, 0.0);
+    rt.touch(1, TouchPhase::Ended, x, y, 0.05);
+    rt.frame(0.0);
+}
+
+#[test]
+fn a_finger_that_scrolls_the_page_leaves_the_field_its_focus() {
+    let mut rt = rig();
+    let (fx, fy) = rt.find("f").unwrap();
+    tap(&mut rt, fx, fy);
+    assert!(rt.state.edit.focused);
+    // Down on the blank under the field, then up the page: a scroll, not a tap.
+    rt.touch(1, TouchPhase::Started, 200.0, 250.0, 0.0);
+    rt.frame(0.0);
+    let held = rt.state.edit.focused;
+    for (i, y) in [230.0, 200.0, 170.0, 140.0].into_iter().enumerate() {
+        rt.touch(1, TouchPhase::Moved, 200.0, y, 0.02 * (i + 1) as f64);
+        rt.frame(1.0 / 60.0);
+    }
+    rt.touch(1, TouchPhase::Ended, 200.0, 140.0, 0.1);
+    rt.frame(1.0 / 60.0);
+    assert!(held, "the finger going down takes no focus away");
+    assert!(rt.state.edit.focused, "nor does the scroll");
+    // A tap there does, as a click beside a field does.
+    tap(&mut rt, 200.0, 250.0);
+    assert!(!rt.state.edit.focused);
+}
+
+#[test]
+fn a_scroll_that_starts_on_a_field_does_not_focus_it() {
+    let mut rt = rig();
+    let (fx, fy) = rt.find("f").unwrap();
+    rt.touch(1, TouchPhase::Started, fx, fy, 0.0);
+    rt.frame(0.0);
+    let on_down = rt.state.edit.focused;
+    for (i, dy) in [10.0, 30.0, 50.0, 70.0].into_iter().enumerate() {
+        rt.touch(1, TouchPhase::Moved, fx, fy - dy, 0.02 * (i + 1) as f64);
+        rt.frame(1.0 / 60.0);
+    }
+    rt.touch(1, TouchPhase::Ended, fx, fy - 70.0, 0.1);
+    rt.frame(1.0 / 60.0);
+    assert!(!on_down, "the finger going down gives no focus");
+    assert!(!rt.state.edit.focused, "nor does the scroll");
+    assert!(rt.find("f").unwrap().1 < fy - 30.0, "the page scrolled");
+}

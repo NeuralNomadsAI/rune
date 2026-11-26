@@ -1,0 +1,1 @@
+- Android: a finger moves focus when it lifts as a tap, not when it lands. Scrolling the page with a field focused blurred the field as the finger went down, so the keyboard closed under the scroll, and a scroll that started on a field focused it and raised the keyboard. A finger no longer drags a selection out of a field either: its handles do.

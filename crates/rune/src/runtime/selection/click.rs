@@ -46,6 +46,9 @@ pub(in crate::runtime) struct InputClick {
     capture: Capture,
     /// Queued press/drag steps paired with `Action::Focus` entries in `Runtime::queue`.
     steps: VecDeque<(String, Step)>,
+    /// A touch host's finger went down on a field: the step and place its lift as a tap queues,
+    /// so that a finger panning the page from a field doesn't focus it.
+    held_down: Option<(String, Step, f32, f32)>,
 }
 
 impl InputClick {
@@ -227,9 +230,15 @@ impl RuntimeCore {
         };
         let link = link.filter(|_| !shift && clicks == 1);
         let check_pill = direct && !shift;
-        self.edit.input_click.capture = Capture::Held { dragging: Some(path.clone()) };
-        self.edit.input_click.steps.push_back((path.clone(), Step::Down { clicks, shift, check_pill }));
-        self.frame.queue.push(Action::Focus(path.clone(), x, y));
+        // A finger doesn't drag a selection out either: its handles do.
+        let on_lift = self.host.text_menus && self.pointer.is_touch_input();
+        self.edit.input_click.capture = Capture::Held { dragging: (!on_lift).then(|| path.clone()) };
+        if on_lift {
+            self.edit.input_click.held_down = Some((path.clone(), Step::Down { clicks, shift, check_pill }, x, y));
+        } else {
+            self.edit.input_click.steps.push_back((path.clone(), Step::Down { clicks, shift, check_pill }));
+            self.frame.queue.push(Action::Focus(path.clone(), x, y));
+        }
         let d = Drag {
             phase: Phase::Down,
             x: lx,
@@ -251,6 +260,15 @@ impl RuntimeCore {
         self.pointer.hold_press(
             capture::Held::new(path, d, crate::PointerButton::Primary, (x, y), down_at, second, None).on_link(link),
         );
+    }
+
+    /// The press a touch host's finger held back on a field (`InputClick::held_down`): queued
+    /// now when it lifted as a `tap`, else forgotten.
+    pub(in crate::runtime) fn end_held_input_down(&mut self, tap: bool) {
+        let Some((path, step, x, y)) = self.edit.input_click.held_down.take() else { return };
+        if !tap { return }
+        self.edit.input_click.steps.push_back((path.clone(), step));
+        self.frame.queue.push(Action::Focus(path, x, y));
     }
 
     /// Focuses text field `ji` with its caret at (x, y), as a single click does, but holds no

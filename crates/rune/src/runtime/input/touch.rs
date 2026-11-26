@@ -216,6 +216,9 @@ pub(in crate::runtime) struct Touch {
     /// The finger's press left the text selection as it was (`press_down` on a touch host): its
     /// lift as a tap does what the press would have.
     pub(in crate::runtime) select_on_lift: bool,
+    /// The focus changes the finger's press asked for on a touch host, kept until it lifts as a
+    /// tap: a finger that pans the page leaves a field its focus, and the keyboard up.
+    focus_on_lift: Vec<Queued>,
     /// [`Drag::data`] kept across an `El::on_edge_drag` gesture's phases.
     pub(in crate::runtime) edge_data: f32,
     /// Active `El::on_edge_drag` target and fallback handler, kept in lockstep with `Mode::Edge`.
@@ -412,6 +415,7 @@ impl RuntimeCore {
                         self.press_selection(self.primary_target(x, y), x, y);
                         self.select_step(selectable::phase::Event::Release);
                     }
+                    self.end_touch_focus(!self.pointer.touch.panned);
                     self.pointer_up(app, x, y);
                 }
                 TouchEffect::PointerLeave => self.pointer_leave(),
@@ -424,6 +428,7 @@ impl RuntimeCore {
                     self.queue_edge_drag(node, edge, phase, origin, pos, cancelled);
                 }
                 TouchEffect::CommitHold { origin: (x, y) } => {
+                    self.end_touch_focus(false);
                     if !self.cancel_drag() { self.drop_press(); }
                     self.secondary_down(x, y);
                     self.secondary_up(app, x, y);
@@ -450,6 +455,14 @@ impl RuntimeCore {
         }
     }
 
+    /// The focus changes a touch host's finger held back (`Touch::focus_on_lift`, and a field's
+    /// own press): made now when it lifted as a `tap`, else forgotten.
+    fn end_touch_focus(&mut self, tap: bool) {
+        let held = std::mem::take(&mut self.pointer.touch.focus_on_lift);
+        if tap { for q in held { self.frame.queue.push_queued(q); } }
+        self.end_held_input_down(tap);
+    }
+
     fn touch_down_inner(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64) {
         if self.pointer.touch.state.is_active() {
             if let Some(mid) = self.pointer.touch.state.second_down_midpoint(id, (x, y)) {
@@ -467,8 +480,15 @@ impl RuntimeCore {
         let scroll = self.touch_scroll_start(x, y);
         self.pointer.touch.panned = false;
         self.pointer.touch.select_on_lift = false;
+        self.end_touch_focus(false);
         self.pointer_move(app, x, y);
+        let queued = self.frame.queue.len();
         self.press_down(app, x, y, true);
+        if self.host.text_menus {
+            for q in self.frame.queue.split_off(queued) {
+                if matches!(q.action, Action::Blur | Action::FocusControl(_)) { self.pointer.touch.focus_on_lift.push(q); } else { self.frame.queue.push_queued(q); }
+            }
+        }
         let now = self.now_clock();
         let policy = self.pointer.touch.policy;
         let (mode, start_hold) = if self.host.titlebar.resize.is_some() {

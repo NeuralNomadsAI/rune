@@ -66,7 +66,9 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Touch**: every finger of a `MotionEvent` (with the samples batched since the last frame, for
   a fling's velocity) goes to Rune's touch handling: a tap clicks, a drag scrolls and flings, a
   finger held for the system's long-press delay (`ViewConfiguration.getLongPressTimeout()`, which
-  the accessibility Touch & hold delay raises) is a secondary click. `Cx::touch_controls` and
+  the accessibility Touch & hold delay raises) is a secondary click. A finger moves focus when it
+  lifts as a tap, not when it lands: one that scrolls the page leaves a field its focus and the
+  keyboard up, and one that starts its scroll on a field doesn't focus it. `Cx::touch_controls` and
   `Cx::hover_none` are true. `Tx::popup_menu` has no native menu and answers `None`, so an app
   draws its own (rune-kit's menus do).
 - **Text selection**: a long press on selectable text or in a field selects the word under it,
