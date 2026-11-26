@@ -143,11 +143,21 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         val editor = nativeEditor(handle)
         val (secure, oneLine) = (editor and EDITOR_SECURE != 0) to (editor and EDITOR_ONE_LINE != 0)
         // A password is not corrected, suggested or learnt; a one-line field has an action key
-        // (sent to Rune as Return, which submits) where a longer one has Return.
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or when {
-            secure -> InputType.TYPE_TEXT_VARIATION_PASSWORD
-            oneLine -> InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
-            else -> InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        // (sent to Rune as Return, which submits) where a longer one has Return; and a field that
+        // says what it holds (`El::keyboard_type`) gets the keys for it.
+        val prose = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        outAttrs.inputType = when (editor shr 8) {
+            EDITOR_EMAIL -> InputType.TYPE_CLASS_TEXT or (if (secure) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+            EDITOR_URL -> InputType.TYPE_CLASS_TEXT or (if (secure) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_VARIATION_URI)
+            // A secret number is a PIN.
+            EDITOR_NUMBER -> InputType.TYPE_CLASS_NUMBER or (if (secure) InputType.TYPE_NUMBER_VARIATION_PASSWORD else 0)
+            EDITOR_DECIMAL -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or (if (secure) InputType.TYPE_NUMBER_VARIATION_PASSWORD else 0)
+            EDITOR_PHONE -> InputType.TYPE_CLASS_PHONE
+            else -> InputType.TYPE_CLASS_TEXT or when {
+                secure -> InputType.TYPE_TEXT_VARIATION_PASSWORD
+                oneLine -> prose
+                else -> InputType.TYPE_TEXT_FLAG_MULTI_LINE or prose
+            }
         }
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             (if (secure) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0) or
@@ -431,6 +441,11 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_SELECT = 4
         const val EDITOR_SECURE = 1
         const val EDITOR_ONE_LINE = 2
+        const val EDITOR_EMAIL = 1
+        const val EDITOR_URL = 2
+        const val EDITOR_NUMBER = 3
+        const val EDITOR_DECIMAL = 4
+        const val EDITOR_PHONE = 5
         const val HAPTIC_SELECTION = 0
         const val HAPTIC_LIGHT = 1
         const val HAPTIC_MEDIUM = 2

@@ -625,6 +625,13 @@ impl RuntimeCore {
         self.focused_input().map(|i| i.single_line)
     }
 
+    /// What the focused field holds ([`El::keyboard_type`](crate::El::keyboard_type)), for a
+    /// platform's keyboard.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn focused_keyboard_type(&self) -> crate::KeyboardType {
+        self.focused_input().map(|i| i.keyboard_type).unwrap_or_default()
+    }
+
     /// Whether the focused editor requires secure native keyboard input.
     pub fn has_secure_focus(&self) -> bool {
         self.focused_input().is_some_and(|i| i.edit.is_secure())

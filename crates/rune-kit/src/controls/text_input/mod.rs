@@ -350,6 +350,12 @@ impl TextInput {
         self.edits.visual(move |e| e.revealed(revealed));
         self
     }
+    /// What the field holds, for a touch keyboard to lay itself out by
+    /// ([`El::keyboard_type`](rune::El::keyboard_type)).
+    pub fn keyboard_type(mut self, keyboard: rune::KeyboardType) -> Self {
+        self.edits.visual(move |e| e.keyboard_type(keyboard));
+        self
+    }
     /// Mark misspelled words and offer their suggestions in the field's menu (`El::spellcheck`).
     pub fn spellcheck(mut self, on: bool) -> Self {
         self.edits.visual(move |e| e.spellcheck(on));

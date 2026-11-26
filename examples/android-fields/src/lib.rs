@@ -1,21 +1,40 @@
 //! A field of each kind, to check on a device which keyboard each one raises: several lines,
-//! one line (its action key submits, with a haptic) and a secret.
+//! one line (its action key submits, with a haptic), a secret, and one for each
+//! `KeyboardType`.
 //! `scripts/android-run.sh --app fields`.
 
 
 use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, Haptic, HapticOutcome, ScrollSpec, TextEdit, col, text, text_input};
+use rune::{AppSpec, Cx, El, Haptic, HapticOutcome, KeyboardType, ScrollSpec, TextEdit, col, edit_access, text, text_input};
+
+/// One-line fields that say what they hold.
+const KINDS: [(&str, KeyboardType); 5] = [
+    ("E-mail", KeyboardType::Email),
+    ("Website", KeyboardType::Url),
+    ("Count", KeyboardType::Number),
+    ("Amount", KeyboardType::Decimal),
+    ("Phone", KeyboardType::Phone),
+];
 
 struct State {
     note: TextEdit,
     name: TextEdit,
     secret: TextEdit,
+    pin: TextEdit,
+    kinds: [TextEdit; KINDS.len()],
     submitted: String,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { note: TextEdit::default(), name: TextEdit::default(), secret: TextEdit::default().secure(), submitted: String::new() }
+        Self {
+            note: TextEdit::default(),
+            name: TextEdit::default(),
+            secret: TextEdit::default().secure(),
+            pin: TextEdit::default().secure(),
+            kinds: Default::default(),
+            submitted: String::new(),
+        }
     }
 }
 
@@ -30,8 +49,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Clear of a phone's status bar, cutout and keyboard; zero on a desktop.
     let [top, right, bottom, left] = cx.safe_area();
     let submitted = if s.submitted.is_empty() { "Nothing submitted".to_owned() } else { format!("Submitted: {}", s.submitted) };
-    col().w_full().h_full().pt(top).pr(right).pb(bottom).pl(left).fill(t.bg).child(
-        col().key("page").w_full().h_full().padding(20.0).gap(18.0).scroll(ScrollSpec { stick_bottom: false })
+    let mut page = col().key("page").w_full().h_full().padding(20.0).gap(18.0).scroll(ScrollSpec { stick_bottom: false })
             .child(field("Note", text_input(&s.note, type_::BODY).key("note").on_edit(|s: &mut State| &mut s.note).min_h(64.0), &t))
             .child(field("Name", text_input(&s.name, type_::BODY).single_line().key("name").on_edit(|s: &mut State| &mut s.name)
                 .on_submit(|s: &mut State, tx| {
@@ -39,8 +57,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                     tx.haptic(Haptic::Notify(HapticOutcome::Success));
                 }), &t))
             .child(field("Password", text_input(&s.secret, type_::BODY).single_line().secure().key("secret").on_edit(|s: &mut State| &mut s.secret), &t))
-            .child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)),
-    )
+            .child(field("PIN", text_input(&s.pin, type_::BODY).single_line().secure().keyboard_type(KeyboardType::Number).key("pin").on_edit(|s: &mut State| &mut s.pin), &t));
+    for (i, (label, keyboard)) in KINDS.into_iter().enumerate() {
+        let input = text_input(&s.kinds[i], type_::BODY).single_line().keyboard_type(keyboard).key(label).on_edit(edit_access(move |s: &mut State| &mut s.kinds[i]));
+        page = page.child(field(label, input, &t));
+    }
+    let page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary));
+    col().w_full().h_full().pt(top).pr(right).pb(bottom).pl(left).fill(t.bg).child(page)
 }
 
 /// Opens the scene: Android's entry point.

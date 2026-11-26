@@ -53,6 +53,8 @@ pub struct InputSpec {
     pub(crate) read_only: bool,
     /// [`El::selection_style`]: the selection's highlight and ink, by window focus, over `selection`.
     pub(crate) selection_style: Option<SelectionStyle>,
+    /// [`El::keyboard_type`]: what a touch keyboard lays itself out for.
+    pub(crate) keyboard_type: KeyboardType,
 }
 
 impl std::fmt::Debug for InputSpec {
@@ -67,6 +69,26 @@ impl std::fmt::Debug for InputSpec {
             .field("single_line", &self.single_line)
             .finish_non_exhaustive()
     }
+}
+
+/// What a text field holds, for a touch keyboard to lay itself out by
+/// ([`El::keyboard_type`]): an e-mail address wants `@` at hand, a number wants digits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum KeyboardType {
+    /// Any text: letters, with the keyboard's correction and suggestions.
+    #[default]
+    Text,
+    /// An e-mail address.
+    Email,
+    /// A web address.
+    Url,
+    /// Whole numbers: digits only.
+    Number,
+    /// Numbers with a decimal separator.
+    Decimal,
+    /// A telephone number.
+    Phone,
 }
 
 /// A text field showing `edit`; route edits back with `.on_edit(|s| &mut s.field)`.
@@ -125,6 +147,7 @@ pub fn text_input(edit: &TextEdit, style: TextStyle) -> El {
         reveal_caret_on_focus: false,
         read_only: false,
         selection_style: None,
+        keyboard_type: KeyboardType::Text,
     }));
     e.sync_input_pills();
     e.sync_input_rich();
@@ -258,6 +281,24 @@ impl El {
     pub fn reveal_caret_on_focus(mut self, on: bool) -> Self {
         if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
             input.reveal_caret_on_focus = on;
+        }
+        self
+    }
+    /// What this text field holds, for a touch keyboard to lay itself out by: Android's shows
+    /// `@` for [`KeyboardType::Email`], digits for [`KeyboardType::Number`], and a
+    /// [`secure`](Self::secure) number is a PIN's keyboard. It changes no text and refuses
+    /// none: a pasted or hardware-typed letter still goes into a number field, so validate what
+    /// the field holds. Hosts without such a keyboard ignore it. [`KeyboardType::Text`] by
+    /// default.
+    ///
+    /// ```no_run
+    /// # use rune::{KeyboardType, TextEdit, TextStyle, text_input};
+    /// let mail = TextEdit::default();
+    /// let field = text_input(&mail, TextStyle::new(14.0, 400.0)).single_line().keyboard_type(KeyboardType::Email);
+    /// ```
+    pub fn keyboard_type(mut self, keyboard: KeyboardType) -> Self {
+        if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
+            input.keyboard_type = keyboard;
         }
         self
     }
