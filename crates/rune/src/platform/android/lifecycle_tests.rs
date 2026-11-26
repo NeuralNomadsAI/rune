@@ -1,4 +1,4 @@
-use super::lifecycle::{Effect, Event, Insets, State, Visibility, safe_area, step, visible_band};
+use super::lifecycle::{Effect, Event, Insets, KEYBOARD_GAP, State, Visibility, safe_area, step, visible_band};
 
 fn run(state: &mut State, events: &[Event]) -> Vec<Effect> {
     events.iter().flat_map(|&e| step(state, e)).collect()
@@ -87,13 +87,14 @@ fn safe_area_ignores_a_bad_density_and_negative_insets() {
 fn the_keyboard_leaves_a_band_of_the_window_in_sight() {
     let bars = [96.0, 0.0, 48.0, 0.0];
     let open = Insets { bars, ime: [0.0, 0.0, 900.0, 0.0] };
-    assert_eq!(visible_band(open, PORTRAIT, 3.0), Some((0.0, 500.0)));
+    // It ends a little above the keyboard, for the field's own padding and border to show.
+    assert_eq!(visible_band(open, PORTRAIT, 3.0), Some((0.0, 500.0 - KEYBOARD_GAP)));
     // Closed, or no taller than the navigation bar it replaces: the whole window shows.
     assert_eq!(visible_band(Insets { bars, ime: [0.0; 4] }, PORTRAIT, 3.0), None);
     assert_eq!(visible_band(Insets { bars, ime: [0.0, 0.0, 48.0, 0.0] }, PORTRAIT, 3.0), None);
     // A keyboard taller than the window, or a density the system never reports.
     assert_eq!(visible_band(Insets { bars, ime: [0.0, 0.0, 5000.0, 0.0] }, PORTRAIT, 3.0), None);
-    assert_eq!(visible_band(open, PORTRAIT, 0.0), Some((0.0, 1500.0)));
+    assert_eq!(visible_band(open, PORTRAIT, 0.0), Some((0.0, 1500.0 - KEYBOARD_GAP)));
 }
 
 #[test]

@@ -1,0 +1,1 @@
+- Android: a focused field's caret line is kept 16 points above the keyboard, where it was kept flush with it and the field's padding and bottom border were under the keyboard.
