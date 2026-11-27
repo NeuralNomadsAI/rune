@@ -84,8 +84,7 @@ pub(crate) struct HostState {
     pub(crate) open_urls_natively: bool,
     /// The host shows text's own menus (a field's, selected text's Copy) as its platform's
     /// selection toolbar, with handles on the selection's ends: Android. A long press selects
-    /// the word under it, as that platform's text does, and a finger changes the selection and
-    /// the focus when it lifts as a tap, not when it lands.
+    /// the word under it, as that platform's text does.
     pub(crate) text_menus: bool,
     /// A finger tapped a text field on such a host (`RuntimeCore::take_field_tap`).
     pub(crate) field_tap: bool,

@@ -213,12 +213,6 @@ pub(in crate::runtime) struct Touch {
     hold_command: Option<TouchHoldCommand>,
     /// The finger down has panned a viewport, so its lift is no tap.
     panned: bool,
-    /// The finger's press left the text selection as it was (`press_down` on a touch host): its
-    /// lift as a tap does what the press would have.
-    pub(in crate::runtime) select_on_lift: bool,
-    /// The focus changes the finger's press asked for on a touch host, kept until it lifts as a
-    /// tap: a finger that pans the page leaves a field its focus, and the keyboard up.
-    focus_on_lift: Vec<Queued>,
     /// [`Drag::data`] kept across an `El::on_edge_drag` gesture's phases.
     pub(in crate::runtime) edge_data: f32,
     /// Active `El::on_edge_drag` target and fallback handler, kept in lockstep with `Mode::Edge`.
@@ -407,17 +401,15 @@ impl RuntimeCore {
                 }
                 TouchEffect::PanMove { scroll, along } => self.touch_scroll_move(scroll, along),
                 TouchEffect::EndScroll { scroll, velocity } => self.touch_scroll_end(scroll, velocity),
-                TouchEffect::PointerMove((x, y)) => self.pointer_move(app, x, y),
-                TouchEffect::PointerUp((x, y)) => {
-                    // A touch host's finger changes the text selection when it lifts as a tap,
-                    // not when it lands: it may be starting a scroll under selected text.
-                    if std::mem::take(&mut self.pointer.touch.select_on_lift) && !self.pointer.touch.panned {
-                        self.press_selection(self.primary_target(x, y), x, y);
-                        self.select_step(selectable::phase::Event::Release);
+                TouchEffect::BeginTouchSelectionDrag { origin: (x, y) } => self.begin_touch_selection_drag(x, y),
+                TouchEffect::CommitTap((x, y)) => self.commit_touch_tap(app, x, y),
+                TouchEffect::CommitWindowDragTap => {
+                    if self.kbd.focus.path().is_some() {
+                        self.frame.queue.push(Action::Blur);
                     }
-                    self.end_touch_focus(!self.pointer.touch.panned);
-                    self.pointer_up(app, x, y);
                 }
+                TouchEffect::PointerMove((x, y)) => self.pointer_move(app, x, y),
+                TouchEffect::PointerUp((x, y)) => self.pointer_up(app, x, y),
                 TouchEffect::PointerLeave => self.pointer_leave(),
                 TouchEffect::ReleaseWithoutClick => {
                     self.pointer.note_button_up(crate::PointerButton::Primary);
@@ -428,7 +420,6 @@ impl RuntimeCore {
                     self.queue_edge_drag(node, edge, phase, origin, pos, cancelled);
                 }
                 TouchEffect::CommitHold { origin: (x, y) } => {
-                    self.end_touch_focus(false);
                     if !self.cancel_drag() { self.drop_press(); }
                     self.secondary_down(x, y);
                     self.secondary_up(app, x, y);
@@ -455,14 +446,6 @@ impl RuntimeCore {
         }
     }
 
-    /// The focus changes a touch host's finger held back (`Touch::focus_on_lift`, and a field's
-    /// own press): made now when it lifted as a `tap`, else forgotten.
-    fn end_touch_focus(&mut self, tap: bool) {
-        let held = std::mem::take(&mut self.pointer.touch.focus_on_lift);
-        if tap { for q in held { self.frame.queue.push_queued(q); } }
-        self.end_held_input_down(tap);
-    }
-
     fn touch_down_inner(&mut self, app: &mut dyn AppDriver, id: u64, x: f32, y: f32, time: f64) {
         if self.pointer.touch.state.is_active() {
             if let Some(mid) = self.pointer.touch.state.second_down_midpoint(id, (x, y)) {
@@ -479,16 +462,8 @@ impl RuntimeCore {
         let has_edge = edge_drag::any_candidate(edge);
         let scroll = self.touch_scroll_start(x, y);
         self.pointer.touch.panned = false;
-        self.pointer.touch.select_on_lift = false;
-        self.end_touch_focus(false);
         self.pointer_move(app, x, y);
-        let queued = self.frame.queue.len();
-        self.press_down(app, x, y, true);
-        if self.host.text_menus {
-            for q in self.frame.queue.split_off(queued) {
-                if matches!(q.action, Action::Blur | Action::FocusControl(_)) { self.pointer.touch.focus_on_lift.push(q); } else { self.frame.queue.push_queued(q); }
-            }
-        }
+        let tap_focus = self.press_down(app, x, y, true);
         let now = self.now_clock();
         let policy = self.pointer.touch.policy;
         let (mode, start_hold) = if self.host.titlebar.resize.is_some() {
@@ -514,7 +489,7 @@ impl RuntimeCore {
                     (Mode::Drag, false)
                 }
                 // An at-once drag in an edge zone waits for the slop, but still has no long press.
-                None => (Mode::Pending { scroll, edge }, !(has_edge && self.press_drags_at_once())),
+                None => (Mode::Pending { scroll, edge, tap_focus }, !(has_edge && self.press_drags_at_once())),
             }
         };
         let hold_event = if start_hold {
@@ -610,6 +585,54 @@ impl RuntimeCore {
     fn press_drags_at_once(&self) -> bool {
         let Some(path) = self.pointer.press.path() else { return false };
         self.live_index(path).is_some_and(|i| self.tree.nodes[i].handlers.touch_at_once && self.tree.nodes[i].handlers.on_drag.is_some())
+    }
+
+    /// A non-scrollable finger crossed `TOUCH_SLOP` off any `on_drag` control: start selection
+    /// dragging only if it landed on selectable text (cancelling a dragged press on a text input
+    /// so it neither steals focus nor fires a press).
+    fn begin_touch_selection_drag(&mut self, x: f32, y: f32) {
+        let target = self.primary_target(x, y);
+        if target.and_then(|t| self.textbox_input(t)).is_some() {
+            if let Some(held) = self.pointer.press.held_mut() {
+                held.hit = capture::Hit::Cancelled;
+            }
+            return;
+        }
+        if !target.is_some_and(|t| self.press_keeps_selection(t))
+            && (self.selectable_at(x, y).is_some() || self.marker_anchor_at(x, y).is_some())
+        {
+            self.press_selection(target, x, y);
+        }
+    }
+
+    /// Finger lifted within `TOUCH_SLOP` as a tap: commit the focus, blur and selection changes
+    /// that `press_down` deferred so pans, pinches, edge swipes and long presses keep the active
+    /// field's focus and soft keyboard undisturbed.
+    fn commit_touch_tap(&mut self, app: &dyn ViewDriver, x: f32, y: f32) {
+        self.move_pointer(app, x, y, false);
+        if self.pointer.press.held().is_some_and(|h| !h.inside()) {
+            return;
+        }
+        let target = self.primary_target(x, y);
+        if target.and_then(|t| self.textbox_input(t)).is_none() {
+            self.edit.clear_input_click();
+        }
+        self.press_selection(target, x, y);
+        if target.is_some_and(|t| self.tree.nodes[t].handlers.on_drag.is_some() || self.tree.nodes[t].handlers.drag_out.is_some()) {
+            self.select_step(selectable::phase::Event::Release);
+        }
+        let Some(ti) = target else {
+            if self.kbd.focus.path().is_some() && !self.armed_marker_in_focused_caret_host() {
+                self.frame.queue.push(Action::Blur);
+            }
+            return;
+        };
+        if let Some(ji) = self.textbox_input(ti) {
+            self.input_tap_up(ji, (x, y), ji == ti);
+            return;
+        }
+        let on_link = self.link_at(ti, x, y).filter(|_| !self.edit.selectable.phase.dragging()).is_some();
+        self.apply_press_focus(ti, x, y, on_link);
     }
 
     /// Whether the held press is on an element that drags, so a finger drags it, not the page.
