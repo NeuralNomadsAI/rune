@@ -4,12 +4,18 @@
 //! None is touched at launch: a system font loads the first time a text has a character the
 //! app's own fonts lack (`TextSystem::load_fallbacks`). The platform's own fallback names the
 //! font and its files, as browsers ask it: DirectWrite on Windows (`direct_write`), CoreText on
-//! Apple platforms (`core_text`), fontconfig in process elsewhere (`fontconfig`). No font
+//! Apple platforms (`core_text`), `/system/etc/fonts.xml` on Android (`android`), fontconfig in
+//! process elsewhere (`fontconfig`). No font
 //! folder is walked and no process is started. `RUNE_SYSTEM_FONTS=off` or
 //! `set_system_fonts(false)` loads none at all (`switch`).
 
 use crate::*;
 
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod android;
+#[cfg(test)]
+mod android_tests;
 #[cfg(target_vendor = "apple")]
 mod core_text;
 mod coverage;
@@ -20,14 +26,16 @@ mod fontconfig;
 mod installed;
 mod switch;
 mod warm;
+#[cfg(target_os = "android")]
+use android as platform;
 #[cfg(target_vendor = "apple")]
 use core_text as platform;
 #[cfg(windows)]
 use direct_write as platform;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
 use fontconfig as platform;
-/// Android and the web: no system fonts to ask.
-#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+/// The web: no system fonts to ask.
+#[cfg(target_arch = "wasm32")]
 mod platform {
     pub(crate) fn family_files(_: &[&str]) -> Vec<std::path::PathBuf> { Vec::new() }
     pub(crate) fn fallback_family_files(_: &[char], _: Option<&str>) -> Vec<std::path::PathBuf> { Vec::new() }
@@ -112,10 +120,15 @@ const SYSTEM_MONO_FILES: &[&str] = &["sfnsmono", "menlo"];
 const SYSTEM_MONO_FAMILIES: &[&str] = &["Cascadia Mono", "Consolas", "Courier New"];
 #[cfg(windows)]
 const SYSTEM_MONO_FILES: &[&str] = &["cascadiamono", "consola", "cour"];
+// Android's `monospace` family, as `fonts.xml` names it, then the fonts it has been.
+#[cfg(target_os = "android")]
+const SYSTEM_MONO_FAMILIES: &[&str] = &["monospace", "Droid Sans Mono", "Cutive Mono"];
+#[cfg(target_os = "android")]
+const SYSTEM_MONO_FILES: &[&str] = &["droidsansmono", "cutivemono"];
 // After fontconfig's own answer (`fontconfig_monospace`).
-#[cfg(not(any(target_vendor = "apple", windows)))]
+#[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
 const SYSTEM_MONO_FAMILIES: &[&str] = &["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Ubuntu Mono"];
-#[cfg(not(any(target_vendor = "apple", windows)))]
+#[cfg(not(any(target_vendor = "apple", windows, target_os = "android")))]
 const SYSTEM_MONO_FILES: &[&str] = &["dejavusansmono", "liberationmono", "notosansmono", "ubuntumono"];
 
 /// The installed `Family::SystemMono` families, most preferred first, loading their files.
@@ -630,6 +643,8 @@ fn walk_font_dirs() -> Vec<(String, std::path::PathBuf)> {
         }
     } else if cfg!(target_os = "ios") {
         dirs.push("/System/Library/Fonts".into());
+    } else if cfg!(target_os = "android") {
+        dirs.push("/system/fonts".into());
     } else if cfg!(windows) {
         let root = std::env::var_os("WINDIR").map_or_else(|| "C:\\Windows".into(), std::path::PathBuf::from);
         dirs.push(root.join("Fonts"));
