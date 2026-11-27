@@ -190,3 +190,6 @@ pub(super) fn installed_families() -> Vec<super::installed::RawFamily> {
         Some(super::installed::RawFamily { monospace: name.contains("mono"), name, weights })
     }).collect()
 }
+
+/// The families are read when a text first needs one: nothing to build ahead.
+pub(super) fn prewarm() {}

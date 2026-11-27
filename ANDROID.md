@@ -49,11 +49,7 @@ On Android `run` returns at once: `RuneView` starts the app in its first surface
 rotation resizes the surface instead of recreating the activity; `examples/android-host` is a
 complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 
-The macro works in a crate that has `#![forbid(unsafe_code)]`. An app that turns on Rune's `avif`
-feature links its x86_64 library (an emulator's) with `-Wl,-Bsymbolic`, from its build script
-(`cargo::rustc-link-arg=-Wl,-Bsymbolic`): the decoder's x86 assembly addresses its exported
-tables directly, which a shared library otherwise refuses (`relocation R_X86_64_PC32 cannot be
-used against symbol`).
+The macro works in a crate that has `#![forbid(unsafe_code)]`.
 
 ## What the host does
 

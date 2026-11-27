@@ -338,8 +338,12 @@ impl<S: 'static> LayerHost<S> {
         #[cfg(target_os = "ios")]
         let text_scale_wake = wake.clone();
         let mut rt = runtime_for(spec, state, size, Env::new(dark, scale), wake);
+        // A phone or tablet's touch screen.
+        #[cfg(target_os = "android")]
+        rt.set_touch_controls(true);
         #[cfg(target_os = "ios")]
         {
+            rt.set_touch_controls(true);
             rt.set_system_text_scale(crate::platform::text_scale::current());
             crate::platform::text_scale::follow_waker(text_scale_wake);
         }

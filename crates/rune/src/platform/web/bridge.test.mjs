@@ -41,6 +41,8 @@ class FakeNode {
         this.selectionDirection = 'forward';
     }
 
+    get id() { return this._attrs.get('id') ?? ''; }
+    set id(next) { this._attrs.set('id', String(next)); }
     get attributes() { return [...this._attrs].map(([name, value]) => ({ name, value })); }
     setAttribute(name, value) { this._attrs.set(name, String(value)); }
     removeAttribute(name) {
@@ -125,11 +127,18 @@ class FakeNode {
     querySelectorAll(selector) {
         const parts = selector.split(',').map(s => s.trim());
         const out = [];
+        const unescapeCssId = raw => {
+            if (/^[0-9]|^-[0-9]|^-$/.test(raw)) throw new SyntaxError(`Invalid CSS id selector: #${raw}`);
+            return raw.replace(/\\([0-9a-fA-F]{1,6}) ?|\\(.)/g, (_, hex, ch) => hex ? String.fromCodePoint(parseInt(hex, 16)) : ch);
+        };
         const walk = node => {
             for (const child of node.children) {
                 if (parts.some(sel => {
                     if (sel === 'a[target="_blank"]') return child.tagName === 'A' && child.target === '_blank';
                     if (sel === 'a[href]') return child.tagName === 'A' && typeof child.href === 'string' && child.href.length > 0;
+                    if (sel === '[data-rune-static]') return child.hasAttribute('data-rune-static');
+                    if (sel === '[id]') return child.hasAttribute('id');
+                    if (sel.startsWith('#')) return child.id === unescapeCssId(sel.slice(1));
                     return child.tagName === sel.toUpperCase();
                 })) out.push(child);
                 walk(child);
@@ -137,6 +146,10 @@ class FakeNode {
         };
         walk(this);
         return out;
+    }
+
+    querySelector(selector) {
+        return this.querySelectorAll(selector)[0] ?? null;
     }
 
     getBoundingClientRect() {
@@ -4988,6 +5001,196 @@ test('openFilePicker handles open, multi-select, cancel, read, and save-download
             h.send = origSend;
         }
     } finally {
+        bridge.destroy(h);
+    }
+});
+
+test('syncWebImages renders display-only <img> elements without crossOrigin, reuses nodes, nests clips, and cleans up', () => {
+    const { h, doc } = setup();
+    try {
+        // Lazy layer creation: empty sync creates no DOM layer.
+        bridge.syncWebImages(h, '[]');
+        assert.equal(h.webImages, null);
+
+        // 1. Mount two unclipped images: layer sits directly before a11y, aria-hidden, pointer-events:none.
+        bridge.syncWebImages(h, JSON.stringify([
+            { id: '10', u: 'https://cdn.example.com/a.png', r: [20, 30, 64, 48], rad: [12, 12, 12, 12], f: 'cover', p: '0% 100%', n: true, o: 0.75 },
+            { id: '20', u: 'https://cdn.example.com/b.png', r: [100, 30, 40, 40], m: [0, 1, -1, 0, 140, 30] },
+        ]));
+        assert.ok(h.webImages, 'webImages layer must be created');
+        assert.equal(h.webImages.getAttribute('data-rune-web-images'), '');
+        assert.equal(h.webImages.getAttribute('aria-hidden'), 'true');
+        assert.ok(h.webImages.style.cssText.includes('pointer-events:none'));
+        const bodyKids = doc.body.children;
+        assert.ok(bodyKids.indexOf(h.webImages) < bodyKids.indexOf(h.a11y), 'webImages must precede a11y in DOM order');
+        assert.equal(h.webImages.children.length, 2);
+
+        const imgA = h.webImages.children[0];
+        const imgB = h.webImages.children[1];
+        assert.equal(imgA.tagName, 'IMG');
+        assert.equal(imgA.src, 'https://cdn.example.com/a.png');
+        assert.equal(imgA.crossOrigin, undefined, 'must never set crossOrigin so cross-origin images display without CORS');
+        assert.equal(imgA.getAttribute('crossorigin'), null);
+        assert.equal(imgA.alt, '');
+        assert.equal(imgA.decoding, 'async');
+        assert.equal(imgA.draggable, false);
+        assert.equal(imgA.getAttribute('aria-hidden'), 'true');
+        assert.ok(imgA.style.cssText.includes('left:20px;top:30px;width:64px;height:48px'));
+        assert.ok(imgA.style.cssText.includes('object-fit:cover;object-position:0% 100%'));
+        assert.ok(imgA.style.cssText.includes('border-radius:12px 12px 12px 12px'));
+        assert.ok(imgA.style.cssText.includes('image-rendering:pixelated'));
+        assert.ok(imgA.style.cssText.includes('opacity:0.75'));
+        assert.ok(imgB.style.cssText.includes('transform:matrix(0,1,-1,0,140,30)'));
+
+        // 2. Add hard clip + rounded clip wrapper and reorder B before A: must reuse exact same <img> elements.
+        let srcWrites = 0;
+        const origSrc = imgA.src;
+        Object.defineProperty(imgA, 'src', {
+            get() { return origSrc; },
+            set() { srcWrites += 1; },
+            configurable: true,
+        });
+        bridge.syncWebImages(h, JSON.stringify([
+            { id: '20', u: 'https://cdn.example.com/b.png', r: [100, 30, 40, 40] },
+            {
+                id: '10',
+                u: 'https://cdn.example.com/a.png',
+                r: [20, 30, 64, 48],
+                c: [10, 40, 80, 38],
+                rc: [[15, 25, 90, 80, 16, 16, 16, 16]],
+            },
+        ]));
+        assert.equal(srcWrites, 0, 'moving or clipping an image must not reassign img.src');
+        assert.equal(h.webImages.children.length, 2);
+        assert.equal(h.webImages.children[0], imgB, 'paint order must update in DOM');
+        const outerClip = h.webImages.children[1];
+        assert.equal(outerClip.tagName, 'DIV');
+        assert.ok(outerClip.style.cssText.includes('left:10px;top:40px;width:80px;height:38px;overflow:hidden'));
+        const roundClip = outerClip.children[0];
+        assert.equal(roundClip.tagName, 'DIV');
+        // Relative to outerClip origin (10, 40): (15-10, 25-40) = (5, -15).
+        assert.ok(roundClip.style.cssText.includes('left:5px;top:-15px;width:90px;height:80px;overflow:hidden;pointer-events:none;border-radius:16px 16px 16px 16px'));
+        assert.equal(roundClip.children[0], imgA, 'imgA must be moved inside nested clip wrappers without recreation');
+        // Relative to roundClip origin (15, 25): (20-15, 30-25) = (5, 5).
+        assert.ok(imgA.style.cssText.includes('left:5px;top:5px;width:64px;height:48px'));
+
+        // 3. Unwrap back to 0 clips and remove imgB: imgA stays reused directly in layer.
+        bridge.syncWebImages(h, JSON.stringify([
+            { id: '10', u: 'https://cdn.example.com/a.png', r: [24, 34, 64, 48] },
+        ]));
+        assert.equal(h.webImages.children.length, 1);
+        assert.equal(h.webImages.children[0], imgA);
+        assert.ok(imgA.style.cssText.includes('left:24px;top:34px;width:64px;height:48px'));
+
+        // 4. Keyboard shift moves webImages alongside canvas and a11y.
+        bridge.sync(h, 'field', 'abc', 0, 3, 3, false);
+        bridge.syncCaret(h, 20, 420, 2, 20);
+        bridge.syncVisualViewport(h, 0, 300, 600);
+        assert.ok(h.webImages.style.transform.includes('translate3d(0, -'), 'keyboard shift must translate webImages');
+
+        // 5. Empty sync removes layer cleanly.
+        bridge.syncWebImages(h, '[]');
+        assert.equal(h.webImages, null);
+    } finally {
+        bridge.destroy(h);
+    }
+});
+
+test('syncWebImages follows page height in document mode and cleans up on destroy', () => {
+    const { h } = setup({ page: true });
+    try {
+        bridge.syncPage(h, 1800, false);
+        bridge.syncWebImages(h, JSON.stringify([
+            { id: '1', u: '/hero.webp', r: [0, 900, 320, 180] },
+        ]));
+        assert.ok(h.webImages);
+        assert.ok(h.webImages.style.cssText.includes('position:absolute'));
+        assert.ok(h.webImages.style.cssText.includes('height:1800px'));
+
+        bridge.syncPage(h, 2400, false);
+        assert.equal(h.webImages.style.height, '2400px');
+
+        const layer = h.webImages;
+        bridge.destroy(h);
+        assert.equal(h.webImages, null);
+        assert.equal(layer.parentElement, null);
+    } finally {
+        bridge.destroy(h);
+    }
+});
+
+test('cssEscape follows CSSOM escaping for numeric-leading and punctuation element ids', () => {
+    const savedCss = globalThis.CSS;
+    Object.defineProperty(globalThis, 'CSS', { value: undefined, configurable: true, writable: true });
+    try {
+        assert.equal(bridge.cssEscape('3d-device-view'), '\\33 d-device-view');
+        assert.equal(bridge.cssEscape('0'), '\\30 ');
+        assert.equal(bridge.cssEscape('-1a'), '-\\31 a');
+        assert.equal(bridge.cssEscape('-'), '\\-');
+        assert.equal(bridge.cssEscape('--html'), '--html');
+        assert.equal(bridge.cssEscape('_intro'), '_intro');
+        assert.equal(bridge.cssEscape('views'), 'views');
+    } finally {
+        Object.defineProperty(globalThis, 'CSS', { value: savedCss, configurable: true, writable: true });
+    }
+});
+
+test('presented hands off scroll anchor with numeric-leading id from static export to live mirror via CSSOM escaping', () => {
+    const { doc, win, body, h } = setup({ page: true });
+    const savedRaf = globalThis.requestAnimationFrame;
+    const savedCustomEvent = globalThis.CustomEvent;
+    const savedCss = globalThis.CSS;
+    const rafQueue = [];
+    const scrolls = [];
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+        value: fn => { rafQueue.push(fn); return rafQueue.length; },
+        configurable: true,
+        writable: true,
+    });
+    Object.defineProperty(globalThis, 'CustomEvent', {
+        value: class CustomEvent { constructor(type, init = {}) { this.type = type; this.bubbles = !!init.bubbles; } },
+        configurable: true,
+        writable: true,
+    });
+    Object.defineProperty(globalThis, 'CSS', { value: undefined, configurable: true, writable: true });
+    try {
+        win.scrollY = 240;
+        win.scrollTo = opts => scrolls.push(opts);
+        h.lastScrollAt = -1000;
+
+        // Build static export DOM under document with a numeric-leading heading id.
+        doc.append(body);
+        const staticStyle = doc.createElement('style');
+        staticStyle.setAttribute('data-rune-static', '');
+        const staticRoot = doc.createElement('main');
+        staticRoot.setAttribute('data-rune-static', '');
+        staticRoot.id = 'root';
+        const staticHeading = doc.createElement('h2');
+        staticHeading.id = '3d-device-view';
+        staticHeading.getBoundingClientRect = () => ({ left: 0, top: 40, right: 300, bottom: 72, width: 300, height: 32 });
+        staticRoot.append(staticHeading);
+        body.append(staticStyle, staticRoot);
+
+        // Populate live mirror with matching numeric-leading heading id at a slightly different y.
+        bridge.syncA11y(h, JSON.stringify([
+            { k: 'heading', p: '#0/3d-device-view', r: [0, 300, 300, 32], l: 2, t: '3D Device View', i: '3d-device-view' },
+        ]));
+        const liveHeading = h.a11y.children.find(el => el.tagName === 'H2');
+        assert.equal(liveHeading.id, '3d-device-view');
+        liveHeading.getBoundingClientRect = () => ({ left: 0, top: 64, right: 300, bottom: 96, width: 300, height: 32 });
+
+        // Two rAF ticks trigger dropStatic(), which strips static ids and anchors scroll to `#\33 d-device-view`.
+        bridge.presented(h);
+        while (rafQueue.length) rafQueue.shift()();
+
+        assert.equal(staticStyle.parentElement, null, 'static style tag removed');
+        assert.equal(staticHeading.hasAttribute('id'), false, 'static export heading id stripped');
+        assert.equal(liveHeading.id, '3d-device-view', 'live mirror keeps numeric-leading id');
+        assert.deepEqual(scrolls, [{ top: 264, behavior: 'instant' }]);
+    } finally {
+        Object.defineProperty(globalThis, 'requestAnimationFrame', { value: savedRaf, configurable: true, writable: true });
+        Object.defineProperty(globalThis, 'CustomEvent', { value: savedCustomEvent, configurable: true, writable: true });
+        Object.defineProperty(globalThis, 'CSS', { value: savedCss, configurable: true, writable: true });
         bridge.destroy(h);
     }
 });

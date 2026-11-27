@@ -78,10 +78,9 @@ png = ["rune-image/png", "dep:image", "dep:png"]
 # SVG and SVGZ images (`ImageCache::svg`, `file`, `load_mime`, and `load` on sniffed SVG bytes), and
 # scalable Linux app icons, rasterized by resvg. Off, those images resolve to `Image::error`.
 svg = ["rune-image/svg", "rune-text/svg"]
-# AVIF images (`ImageCache::load` on AVIF bytes), decoded natively by rav1d, a Rust port of
-# dav1d; an animated AVIF shows its first frame. Building it for x86 needs NASM on the PATH for
-# rav1d's assembly. Off, AVIF bytes resolve to `Image::error`. No effect on web, where the
-# browser decodes AVIF.
+# AVIF stills (`ImageCache::load` on AVIF bytes), decoded natively by rav1d, a pure-Rust port of
+# dav1d; animated AVIF (`avis`) is rejected natively. Off, AVIF bytes resolve to `Image::error`.
+# No effect on web, where the browser decodes AVIF.
 avif = ["rune-image/avif"]
 # Linux and web (`wasm32`): spell check text fields (`El::spellcheck`) against Hunspell
 # dictionaries via `spellbook` (MPL-2.0) and `unicode-segmentation` (installed system dictionaries
@@ -166,14 +165,6 @@ image = { workspace = true, features = ["png"] }
 png = { workspace = true }
 pollster = { workspace = true }
 
-# winit's Android backend needs one activity glue to build; Rune's own host
-# (`platform::android`) drives the app instead, through JNI and the NDK's `ANativeWindow`.
-[target.'cfg(target_os = "android")'.dependencies]
-winit = { workspace = true, features = ["android-native-activity"] }
-jni-sys = "0.3"
-ndk-sys = "0.6"
-# TalkBack: the low-level adapter, driven by `RuneView`'s own `AccessibilityNodeProvider`.
-accesskit_android = { version = "0.9.1", optional = true }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), not(target_os = "android")))'.dependencies]
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
@@ -240,6 +231,15 @@ accesskit_windows = { version = "0.35.2", optional = true }
 # `AppHandle::register_url_scheme` writes the per-user `Software\Classes\<scheme>` entry.
 windows-registry = "0.6"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_System_DataExchange", "Win32_System_Memory"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `winit` pulls `android-activity` on Android, which requires choosing an activity backend.
+winit = { workspace = true, features = ["android-native-activity"] }
+# Rune's own host (`platform::android`) drives the app, through JNI and the NDK's `ANativeWindow`.
+jni-sys = "0.3"
+ndk-sys = "0.6"
+# TalkBack: the low-level adapter, driven by `RuneView`'s own `AccessibilityNodeProvider`.
+accesskit_android = { version = "0.9.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # AT-SPI over D-Bus on its own async-io thread, started only when the desktop's accessibility bus is on.

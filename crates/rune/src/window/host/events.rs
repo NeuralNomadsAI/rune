@@ -120,7 +120,7 @@ impl Host {
     }
 
     #[cfg(target_os = "macos")]
-    pub(in crate::window) fn fn_key(&mut self, event_loop: &ActiveEventLoop) {
+    pub(in crate::window) fn fn_key(&mut self, event_loop: Option<&ActiveEventLoop>) {
         if self.poll_gpu_loss() { return; }
         let changes = {
             let Some(l) = &self.win else { return };
@@ -136,13 +136,15 @@ impl Host {
                 key: winit::keyboard::KeyCode::Fn, mods: map_mods(self.mods), pressed, repeat: false, text: None, consumed_mods: Default::default(),
             }, None);
         }
-        if redraw && !self.dispatch_immediate_keyboard(event_loop) && let Some(l) = &self.win {
+        if crate::window::should_redraw_after_polled_keys(redraw, event_loop, |el| self.dispatch_immediate_keyboard(el))
+            && let Some(l) = &self.win
+        {
             l.request_redraw();
         }
     }
 
     #[cfg(target_os = "macos")]
-    pub(in crate::window) fn media_keys(&mut self, event_loop: &ActiveEventLoop) {
+    pub(in crate::window) fn media_keys(&mut self, event_loop: Option<&ActiveEventLoop>) {
         if self.poll_gpu_loss() { return; }
         let events = {
             let Some(l) = &self.win else { return };
@@ -153,7 +155,9 @@ impl Host {
         for (decoded, mods) in events {
             redraw |= self.app.media_key(decoded, mods);
         }
-        if redraw && !self.dispatch_immediate_keyboard(event_loop) && let Some(l) = &self.win {
+        if crate::window::should_redraw_after_polled_keys(redraw, event_loop, |el| self.dispatch_immediate_keyboard(el))
+            && let Some(l) = &self.win
+        {
             l.request_redraw();
         }
     }
@@ -421,6 +425,15 @@ impl Host {
                 if stale { return; }
                 #[cfg(all(feature = "native-file-dialog", target_os = "linux"))]
                 if let Some(w) = &self.win { crate::file_dialog::window_focus(&w.window, focused && self.life.shown()); }
+                #[cfg(target_os = "macos")]
+                {
+                    self.pacing_config.focused = focused;
+                    if let Some(w) = &mut self.win
+                        && let Some(pacing) = &mut w.native.pacing
+                    {
+                        pacing.set_focused(focused);
+                    }
+                }
                 self.observability.report_focus(focused);
                 // Deliver independently of drawable availability, including hide/occlusion.
                 self.app.window_focus(focused);
@@ -472,8 +485,16 @@ impl Host {
         let (chrome, titlebar) = (self.chrome, self.titlebar);
         // A finger presses through `WindowEvent::Touch`; the mouse events a system makes up
         // from it (Windows promotes touches) would press a second time.
-        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } | WindowEvent::MouseInput { .. })
-            && (app.rt().touching() || host_events::touch_promoted()) { return; }
+        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } | WindowEvent::MouseInput { .. }) {
+            let (drop_event, dirty) = host_events::drop_touch_promoted_mouse(
+                app.rt_mut(),
+                !matches!(event, WindowEvent::CursorLeft { .. }),
+            );
+            if drop_event {
+                if dirty { l.request_redraw(); }
+                return;
+            }
+        }
         let record_reopen = |reopen: &mut crate::window::state::ReopenState, w: &Win, fit_height: bool| {
             if self.life.shown() {
                 reopen.record_live(
@@ -697,6 +718,10 @@ impl Host {
                 if rt.stale() { l.request_redraw(); }
             }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 let pressed = event.state == ElementState::Pressed;
                 self.observability.report_key(
                     pressed,
@@ -754,7 +779,7 @@ impl Host {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-                if l.native.drag_serial.is_some() {
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
                     crate::platform::wayland::serial::wire::drain_window(&l.window);
                 }
                 let input_scale = app.rt().input_scale();
@@ -786,7 +811,7 @@ impl Host {
             }
             WindowEvent::Touch(touch) => {
                 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-                if l.native.drag_serial.is_some() {
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
                     crate::platform::wayland::serial::wire::drain_window(&l.window);
                 }
                 #[cfg(target_os = "macos")]
@@ -807,7 +832,7 @@ impl Host {
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-                if l.native.drag_serial.is_some() {
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
                     crate::platform::wayland::serial::wire::drain_window(&l.window);
                 }
                 if state == ElementState::Pressed {
@@ -839,6 +864,10 @@ impl Host {
                 l.request_redraw();
             }
             WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 if let Some((x, y)) = button_at(app, &l.window) {
                     match state {
                         ElementState::Pressed => app.rt_mut().secondary_down(x, y),
@@ -852,6 +881,10 @@ impl Host {
                 l.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if self.wayland && crate::platform::wayland::serial::wire::has_listeners() {
+                    crate::platform::wayland::serial::wire::drain_window(&l.window);
+                }
                 if let Some((x, y)) = button_at(app, &l.window) {
                     match state {
                         ElementState::Pressed => app.button_down(x, y, pointer_button(button)),
@@ -951,6 +984,8 @@ impl Host {
             rt.set_system_accent(crate::system_accent());
             rt.set_system_scroll_bars_state(crate::platform::scroll_bars::current().with_override(self.args.scroll_bars));
             rt.set_system_text_scale(crate::platform::text_scale::cached());
+            #[cfg(target_os = "windows")]
+            rt.sync_windows_tablet_mode_if_changed();
             #[cfg(target_os = "linux")]
             {
                 rt.set_system_reduced_motion(crate::platform::preferences::reduced_motion());

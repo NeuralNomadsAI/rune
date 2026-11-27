@@ -360,8 +360,16 @@ impl AnyHost for OverlayHost {
             && !core.pointer_owner.captured_by_injected()
             && let Some(x11) = &core.x11 { x11.request_keys(); }
         use crate::input::host_events;
-        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } | WindowEvent::MouseInput { .. })
-            && (app.rt().touching() || host_events::touch_promoted()) { return; }
+        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } | WindowEvent::MouseInput { .. }) {
+            let (drop_event, dirty) = host_events::drop_touch_promoted_mouse(
+                app.rt_mut(),
+                !matches!(event, WindowEvent::CursorLeft { .. }),
+            );
+            if drop_event {
+                core.dirty |= dirty;
+                return;
+            }
+        }
         let input_enabled = core.options.input.resolved(core.interactive) != OverlayInput::None;
         match event {
             WindowEvent::Moved(_) => {
@@ -402,6 +410,8 @@ impl AnyHost for OverlayHost {
                 core.accent_changed(app.rt_mut(), crate::system_accent());
                 core.scroll_bars_changed(app.rt_mut(), crate::platform::scroll_bars::current());
                 app.rt_mut().set_system_text_scale(crate::platform::text_scale::cached());
+                #[cfg(target_os = "windows")]
+                app.rt_mut().sync_windows_tablet_mode_if_changed();
                 #[cfg(target_os = "linux")]
                 {
                     let rt = app.rt_mut();
@@ -450,6 +460,10 @@ impl AnyHost for OverlayHost {
                 core.dirty = true;
             }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } if core.options.keys.takes_keys() => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if crate::platform::wayland::serial::wire::has_listeners() {
+                    crate::platform::wayland::serial::wire::drain_all();
+                }
                 let queued = if event.state == winit::event::ElementState::Pressed
                     && let Some(window) = core.live_window().cloned()
                     && let Some(text) = crate::platform::ime::take_direct_commit(&window)
@@ -475,6 +489,10 @@ impl AnyHost for OverlayHost {
                 }
             }
             WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => {
+                #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+                if crate::platform::wayland::serial::wire::has_listeners() {
+                    crate::platform::wayland::serial::wire::drain_all();
+                }
                 let pressed = state.is_pressed();
                 if pressed {
                     core.control_click = cfg!(target_os = "macos") && core.mods.control_key();
@@ -580,6 +598,10 @@ impl AnyHost for OverlayHost {
         let more = if core.has_cpu() { core.draw_cpu(app, Some(_event_loop)) } else { core.draw(app, Some(_event_loop)) };
         #[cfg(not(target_os = "windows"))]
         let more = core.draw(app, Some(_event_loop));
+        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+        if core.presence.shown() && crate::window::is_wayland(_event_loop) {
+            crate::platform::wayland::primary_selection::wire::ensure_for_event_loop(_event_loop);
+        }
         core.poll_activation_tokens(crate::time::now());
         core.apply_cursor(app.rt());
         core.a11y_turn(app.rt_mut()) || more
@@ -605,6 +627,12 @@ impl AnyHost for OverlayHost {
             || self.core.has_pending_wayland_activation_token_events();
         #[cfg(not(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))]
         false
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+    fn primary_selection_lost(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.app.rt_mut().primary_selection_lost();
     }
 
     fn keeps_loop(&self) -> bool {

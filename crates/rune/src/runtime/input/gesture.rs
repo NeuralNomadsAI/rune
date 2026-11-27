@@ -63,6 +63,9 @@ impl RuntimeCore {
             self.touch_wheel_event_at(ev, (x, y));
             return;
         }
+        if !self.pointer.is_touch_input() {
+            self.sync_primary_pointer(cx::PrimaryPointer::Hover);
+        }
         if ev.phase == GesturePhase::Began { self.wheel_began(); }
         let moved = ev.dx != 0.0 || ev.dy != 0.0;
         if moved {
@@ -369,7 +372,7 @@ impl RuntimeCore {
             None => return false,
         };
         if self.gesture_chain(x, y, |g| g.magnify.is_some()).is_empty() { return false; }
-        self.magnify_event(MagnifyEvent { wheel: true, ..MagnifyEvent::new(delta).at(x, y) });
+        self.magnify_event(MagnifyEvent::new(delta).at(x, y).wheel(true));
         true
     }
 
@@ -590,6 +593,9 @@ impl RuntimeCore {
             PointerButton::Primary => return self.pointer_down(app, x, y),
             PointerButton::Secondary => return self.secondary_down(x, y),
             _ => {}
+        }
+        if !self.pointer.is_touch_input() {
+            self.sync_primary_pointer(cx::PrimaryPointer::Hover);
         }
         let (x, y) = self.locked_point(x, y);
         let starts_gesture = !self.pointer.any_button_down() && !self.pointer.captured();
