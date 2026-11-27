@@ -1,0 +1,1 @@
+- Android: the manifest declares `RuneClipboardProvider` with `exported="false"` and `grantUriPermissions="true"`. Exported, any installed app could open the last copied image at any time; now the clipboard grants a read to the app that pastes, and no other can open it. An app that copied the example's manifest should change its own.

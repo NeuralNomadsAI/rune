@@ -9,8 +9,9 @@ import java.io.File
 
 /**
  * Serves the image Rune last copied to whoever pastes it. Declare it in the manifest with the
- * authority `${applicationId}.rune.clipboard`, `exported="true"` and no other access: it serves
- * that one file, read-only.
+ * authority `${applicationId}.rune.clipboard`, `exported="false"` and
+ * `grantUriPermissions="true"`: the clipboard grants the app that pastes a read of that one
+ * file, and no other app can open it.
  */
 class RuneClipboardProvider : ContentProvider() {
     override fun onCreate() = true

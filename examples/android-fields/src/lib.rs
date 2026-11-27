@@ -1,14 +1,18 @@
 //! A field of each kind, to check on a device which keyboard each one raises: several lines,
 //! one line (its action key submits, with a haptic), a secret, and one for each
 //! `InputMode`; and two buttons that pick documents to read and one to write (`Tx::pick_files`,
-//! `Tx::pick_save_file`), read and written off the UI thread through their `FileHandle`s.
+//! `Tx::pick_save_file`), read and written off the UI thread through their `FileHandle`s; and
+//! two more that copy an image and say what the clipboard holds.
 //! `scripts/android-run.sh --app fields`.
 
 
 use rune::tok::{self, type_};
 use std::io::{Read, Write};
 
-use rune::{AppSpec, Cx, El, FileDialogOptions, FileHandle, Haptic, HapticOutcome, InputMode, Latest, ScrollSpec, TextEdit, Tx, col, edit_access, text, text_input};
+use rune::{
+    AppSpec, ClipboardContent, ClipboardImage, Cx, El, FileDialogOptions, FileHandle, Haptic, HapticOutcome, InputMode, Latest, ScrollSpec, TextEdit, Tx, col,
+    edit_access, text, text_input,
+};
 
 /// One-line fields that say what they hold.
 const KINDS: [(&str, InputMode); 7] = [
@@ -111,7 +115,22 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             Err(why) => s.picked = vec![why.to_string()],
         });
     });
-    let mut page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)).child(attach).child(save);
+    let copy = button("Copy an image", "copy-image", &t).on_press_tx(|s: &mut State, tx: &mut Tx| {
+        // Two red pixels by two: enough for another app to paste and for this one to read back.
+        let Some(image) = ClipboardImage::from_rgba(2, 2, &[255, 0, 0, 255].repeat(4)) else { return };
+        tx.copy_rich(ClipboardContent::new("").with_image(image));
+        s.picked = vec!["Image copied".to_owned()];
+    });
+    let read = button("Read the clipboard", "read-clipboard", &t).on_press_tx(|_: &mut State, tx: &mut Tx| {
+        tx.read_clipboard(|s: &mut State, content, _| {
+            s.picked = vec![match content.image() {
+                Some(image) => format!("Clipboard: an image, {} by {}", image.size().0, image.size().1),
+                None if content.text().is_empty() => "Clipboard: empty".to_owned(),
+                None => format!("Clipboard: {} characters of text", content.text().chars().count()),
+            }];
+        });
+    });
+    let mut page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)).child(attach).child(save).child(copy).child(read);
     for (i, line) in s.picked.iter().enumerate() {
         page = page.child(text(line.clone()).key(format!("picked-{i}")).font(type_::BODY).color(t.text_secondary));
     }

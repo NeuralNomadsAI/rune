@@ -119,8 +119,9 @@ used against symbol`).
   loaded the first time a text needs it.
 - **Clipboard**: text and one image through `ClipboardManager`; a copied image is served by
   `RuneClipboardProvider`, which the manifest declares with the authority
-  `${applicationId}.rune.clipboard`. A secret copy is marked sensitive. `clipboard::revision` counts
-  the system's clipboard changes.
+  `${applicationId}.rune.clipboard`, `exported="false"` and `grantUriPermissions="true"`: the
+  clipboard grants the app that pastes a read of the image, and no other app can open it. A secret
+  copy is marked sensitive. `clipboard::revision` counts the system's clipboard changes.
 - **Links**: `Tx::open_url` starts `Intent.ACTION_VIEW`; `Tx::open_url_then` reports a failure when no
   app takes the link.
 - **Files**: `Tx::pick_file`, `Tx::pick_files` and `Tx::pick_save_file` show the system's
