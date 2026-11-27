@@ -141,6 +141,8 @@ pub(super) struct View {
     wake: Waker,
     ime: ImeBridge,
     selection: SelectionBridge,
+    /// A document pick the app asked for, until the view takes it (`picker::Pick::Show`).
+    pick: Option<String>,
     clipboard: crate::clipboard::Client,
     #[cfg(feature = "accessibility")]
     a11y: Option<crate::a11y::android::Adapter>,
@@ -152,7 +154,7 @@ impl View {
         let start = take_registered()?;
         let mut clipboard = crate::clipboard::Client::default();
         clipboard.connect(wake.clone());
-        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), selection: SelectionBridge::default(), clipboard, #[cfg(feature = "accessibility")] a11y: None })
+        Some(Self { lifecycle: lifecycle::State::default(), start: Some(start), host: None, density, long_press, dark, insets: Insets::default(), wake, ime: ImeBridge::default(), selection: SelectionBridge::default(), pick: None, clipboard, #[cfg(feature = "accessibility")] a11y: None })
     }
 
     fn viewport(&self, px: (u32, u32)) -> (f32, f32) {
@@ -182,6 +184,11 @@ impl View {
                         next = host.frame().into();
                         self.clipboard.flush_core(host.core());
                         if self.selection.after_frame(host.as_mut()) { next = Next::VSync }
+                        match super::picker::take(host.core()) {
+                            Some(super::picker::Pick::Show(ask)) => self.pick = Some(ask),
+                            Some(super::picker::Pick::Refused) => next = Next::VSync,
+                            None => {}
+                        }
                         #[cfg(feature = "accessibility")]
                         if let Some(a11y) = &mut self.a11y {
                             let (queued, wake) = a11y.service(host.core(), "");
@@ -209,6 +216,8 @@ impl View {
         host.core().host.open_urls_natively = true;
         // `RuneView` shows text's menus as the selection toolbar, and handles on its ends.
         host.core().host.text_menus = true;
+        // And `Tx::open_file` as the system's document picker (`picker.rs`).
+        host.core().host.file_dialogs = true;
         self.host = Some(host);
         Ok(())
     }
@@ -269,6 +278,18 @@ impl View {
             Ends::Caret(at) => Ends::Caret(px(at)),
             Ends::Range { start, end } => Ends::Range { start: px(start), end: px(end) },
         }))
+    }
+
+    /// The document pick for the view to show, once.
+    pub(super) fn take_file_pick(&mut self) -> Option<String> {
+        self.pick.take()
+    }
+
+    /// The picker closed (`picker::answer`).
+    pub(super) fn files_picked(&mut self, id: u64, picked: Result<Option<Vec<std::path::PathBuf>>, String>) -> Next {
+        let Some(host) = &mut self.host else { return Next::Idle };
+        super::picker::answer(host.core(), id, picked);
+        self.step(Event::Frame, None)
     }
 
     /// The haptics handlers asked for since the last call (`haptics::code`), for the view to play.

@@ -53,8 +53,8 @@ pub struct InputSpec {
     pub(crate) read_only: bool,
     /// [`El::selection_style`]: the selection's highlight and ink, by window focus, over `selection`.
     pub(crate) selection_style: Option<SelectionStyle>,
-    /// [`El::keyboard_type`]: what a touch keyboard lays itself out for.
-    pub(crate) keyboard_type: KeyboardType,
+    /// [`El::input_mode`]: what a touch keyboard lays itself out for.
+    pub(crate) input_mode: InputMode,
 }
 
 impl std::fmt::Debug for InputSpec {
@@ -72,10 +72,11 @@ impl std::fmt::Debug for InputSpec {
 }
 
 /// What a text field holds, for a touch keyboard to lay itself out by
-/// ([`El::keyboard_type`]): an e-mail address wants `@` at hand, a number wants digits.
+/// ([`El::input_mode`]): an e-mail address wants `@` at hand, a number wants digits. The values
+/// are HTML's `inputmode`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum KeyboardType {
+pub enum InputMode {
     /// Any text: letters, with the keyboard's correction and suggestions.
     #[default]
     Text,
@@ -84,11 +85,15 @@ pub enum KeyboardType {
     /// A web address.
     Url,
     /// Whole numbers: digits only.
-    Number,
+    Numeric,
     /// Numbers with a decimal separator.
     Decimal,
     /// A telephone number.
-    Phone,
+    Tel,
+    /// A search: the keyboard's action key searches.
+    Search,
+    /// No touch keyboard: the app types into the field with a keypad of its own.
+    None,
 }
 
 /// A text field showing `edit`; route edits back with `.on_edit(|s| &mut s.field)`.
@@ -147,7 +152,7 @@ pub fn text_input(edit: &TextEdit, style: TextStyle) -> El {
         reveal_caret_on_focus: false,
         read_only: false,
         selection_style: None,
-        keyboard_type: KeyboardType::Text,
+        input_mode: InputMode::Text,
     }));
     e.sync_input_pills();
     e.sync_input_rich();
@@ -285,20 +290,20 @@ impl El {
         self
     }
     /// What this text field holds, for a touch keyboard to lay itself out by: Android's shows
-    /// `@` for [`KeyboardType::Email`], digits for [`KeyboardType::Number`], and a
+    /// `@` for [`InputMode::Email`], digits for [`InputMode::Numeric`], and a
     /// [`secure`](Self::secure) number is a PIN's keyboard. It changes no text and refuses
     /// none: a pasted or hardware-typed letter still goes into a number field, so validate what
-    /// the field holds. Hosts without such a keyboard ignore it. [`KeyboardType::Text`] by
-    /// default.
+    /// the field holds. With [`InputMode::None`] no touch keyboard comes up. Hosts without such
+    /// a keyboard ignore it. [`InputMode::Text`] by default.
     ///
     /// ```no_run
-    /// # use rune::{KeyboardType, TextEdit, TextStyle, text_input};
+    /// # use rune::{InputMode, TextEdit, TextStyle, text_input};
     /// let mail = TextEdit::default();
-    /// let field = text_input(&mail, TextStyle::new(14.0, 400.0)).single_line().keyboard_type(KeyboardType::Email);
+    /// let field = text_input(&mail, TextStyle::new(14.0, 400.0)).single_line().input_mode(InputMode::Email);
     /// ```
-    pub fn keyboard_type(mut self, keyboard: KeyboardType) -> Self {
+    pub fn input_mode(mut self, mode: InputMode) -> Self {
         if let Some(input) = self.cold.get_mut_if_some().and_then(|c| c.input.as_deref_mut()) {
-            input.keyboard_type = keyboard;
+            input.input_mode = mode;
         }
         self
     }

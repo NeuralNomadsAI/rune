@@ -100,8 +100,9 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   focus goes to another kind: a one-line field has an action key, which submits as Return does,
   where a longer one has Return; a secret field (`El::secure`) gets the keyboard as a password's,
   with no correction, suggestion or learning, and its text goes in as typed keys since it takes no
-  composition. A field that says what it holds (`El::keyboard_type`: an e-mail or web address, a
-  number, a decimal, a phone number) gets the keys for it, and a secret number a PIN's.
+  composition. A field that says what it holds (`El::input_mode`, HTML's `inputmode`: an e-mail or web address, a
+  number, a decimal, a phone number, a search) gets the keys for it, a secret number a PIN's,
+  and one with `InputMode::None` no keyboard at all.
 - **Haptics**: what handlers ask for with `Tx::haptic` is played after the frame with
   `View.performHapticFeedback` (the table in `crates/rune/src/haptics.rs`), which needs no
   permission and follows the system's touch feedback setting. The view adds what Android's own
@@ -116,6 +117,13 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   the system's clipboard changes.
 - **Links**: `Tx::open_url` starts `Intent.ACTION_VIEW`; `Tx::open_url_then` reports a failure when no
   app takes the link.
+- **Files**: `Tx::open_file` and `Tx::open_files` show the system's document picker
+  (`Intent.ACTION_OPEN_DOCUMENT`, the filters' extensions as MIME types). It answers with
+  `content://` URIs where Rune's dialogs answer with paths, so `RuneView` copies each picked
+  document into the app's cache (`rune-picked/`), off the UI thread, and the copies' paths answer
+  the dialog; they last until the app's process next starts. `RuneActivity` starts the picker; a
+  host with its own activity sets `RuneView.filePicker` and calls `filesPicked`. `Tx::save_file`
+  and `Tx::open_folder` are refused with an error: there is no path to give for them.
 - **Accessibility**: TalkBack reads Rune's AccessKit tree through an `AccessibilityNodeProvider` on
   `RuneView` (`accesskit_android`, with the `accessibility` feature): roles, names, states, focus,
   explore by touch and actions. The view is a passive root and each text a stop of its own

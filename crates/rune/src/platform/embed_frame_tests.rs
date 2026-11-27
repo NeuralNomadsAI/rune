@@ -342,3 +342,20 @@ fn a_frame_answers_menus_no_host_shows_and_leaves_a_touch_hosts_text_menus_to_it
         assert_eq!(rt.popup_menu().is_some(), kept, "touch host: {touch_host}");
     }
 }
+
+#[test]
+fn a_frame_refuses_a_file_dialog_no_host_shows_and_leaves_it_to_a_host_that_does() {
+    let start = crate::time::now();
+    for (host_shows, kept) in [(false, false), (true, true)] {
+        let mut clock = FrameClock::new(start);
+        let mut rt = Runtime::new((), |_, _| el().size(40.0, 20.0), (40.0, 20.0), Env::default());
+        rt.wall_start = Some(start);
+        rt.core_mut().host.file_dialogs = host_shows;
+        rt.frame(0.0);
+        rt.update(|_, tx| tx.open_file(crate::FileDialogOptions::default(), |_: &mut (), _, _| {}));
+        assert!(rt.file_dialog().is_some(), "the dialog is asked for");
+        let (core, mut app) = rt.split_mut();
+        step_and_flush(&mut clock, core, &mut app, start + FRAME_60HZ, false);
+        assert_eq!(rt.file_dialog().is_some(), kept, "host shows file dialogs: {host_shows}");
+    }
+}

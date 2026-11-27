@@ -52,7 +52,7 @@ impl ImeBridge {
         let editor = Editor::focused(core);
         // A secret field has no input method area, as it takes no composition; it takes the
         // keyboard all the same, which on a phone is the only one, told it is a password's.
-        let area = area.or(editor.filter(|e| e.secure).map(|_| [0.0; 4]));
+        let area = area.or(editor.filter(|e| e.secure).map(|_| [0.0; 4])).filter(|_| editor.is_none_or(Editor::wants_keyboard));
         let step = self.sync.step(reset, area, false, true, core.window_scale());
         let window = core.ime_text().map(ImeWindow::new);
         let next = match (step.set_allowed, step.cancel, &self.window, &window) {
