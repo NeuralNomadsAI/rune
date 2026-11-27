@@ -209,6 +209,8 @@ fn run_configured(factory: Factory, args: Args, accessory: bool) -> Result<(), S
         display_error: None,
         wayland_wake: super::wayland_wake::State::default(),
         on_display_close: Vec::new(),
+        display_watch: super::displays::DisplayWatch::default(),
+        free_overlay_slots: Vec::new(),
     };
     crate::open_url::incoming::prepare();
     crate::marks::mark("loop.run");
@@ -221,6 +223,7 @@ fn run_configured(factory: Factory, args: Args, accessory: bool) -> Result<(), S
     {
         crate::platform::wayland::drop::shutdown();
         crate::platform::wayland::backdrop::shutdown();
+        crate::platform::wayland::presentation::shutdown();
     }
     crate::clipboard::shutdown(); // Also cover an event-loop error before `exiting`.
     crate::platform::ready_signal::clear();

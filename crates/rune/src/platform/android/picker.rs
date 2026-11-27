@@ -1,10 +1,29 @@
 //! `Tx::pick_file`, `Tx::pick_files` and `Tx::pick_save_file` through Android's document picker.
-//! It answers with `content://` URIs, which have no path: each becomes a `FileHandle` that
-//! opens its document through the `ContentResolver` (`services::open_document`). A dialog that
-//! wants a path (`Tx::open_file` and its kin) and a folder are refused.
+//! It answers with `content://` URIs, which have no path: each becomes a `FileHandle` whose
+//! provider opens its document through the `ContentResolver` (`services::open_document`). A
+//! dialog that wants a path (`Tx::open_file` and its kin) and a folder are refused.
 
-use crate::file_dialog::{DialogAnswer, FileDialogError, FileDialogKind, FileHandle};
+use std::io::{self, Read, Write};
+
+use crate::file_dialog::{DialogAnswer, FileDialogError, FileDialogKind, FileHandle, FileHandleProvider};
 use crate::runtime::RuntimeCore;
+
+/// A picked document, by its `content://` URI: opened anew for each read or write, which blocks.
+struct Document(String);
+
+impl Document {
+    #[cfg(target_os = "android")]
+    fn open(&self, write: bool) -> io::Result<std::fs::File> { super::services::open_document(&self.0, write).map_err(io::Error::other) }
+
+    #[cfg(not(target_os = "android"))]
+    fn open(&self, _write: bool) -> io::Result<std::fs::File> { Err(io::Error::new(io::ErrorKind::Unsupported, format!("{} opens on Android only", self.0))) }
+}
+
+impl FileHandleProvider for Document {
+    fn reader(&self) -> io::Result<Box<dyn Read + Send>> { Ok(Box::new(self.open(false)?)) }
+
+    fn writer(&self) -> io::Result<Box<dyn Write + Send>> { Ok(Box::new(self.open(true)?)) }
+}
 
 /// Between the fields of [`Pick::Show`].
 const UNIT: char = '\u{1f}';
@@ -45,6 +64,6 @@ pub(crate) fn take(core: &mut RuntimeCore) -> Option<Pick> {
 /// The picker closed: each picked document's URI and name, `None` when the user backed out, or
 /// why it could not show.
 pub(crate) fn answer(core: &mut RuntimeCore, id: u64, picked: Result<Option<Vec<(String, String)>>, String>) {
-    let handles = picked.map(|documents| documents.map(|list| list.into_iter().map(|(uri, name)| FileHandle::document(name, uri)).collect()));
+    let handles = picked.map(|documents| documents.map(|list| list.into_iter().map(|(uri, name)| FileHandle::from_provider(name, Document(uri))).collect()));
     core.answer_file_dialog(id, handles.map(DialogAnswer::Handles).map_err(FileDialogError));
 }

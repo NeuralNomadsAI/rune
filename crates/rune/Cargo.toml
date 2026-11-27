@@ -7,7 +7,7 @@ description = "GPU-rendered Rust UI framework (wgpu, winit) with keyed element t
 autotests = false
 
 [features]
-default = ["accessibility", "dbus", "embedded-fonts", "hunspell", "metal-backend", "ogg-audio", "svg", "wayland-csd-title", "rune-gpu/default", "rune-image/default", "rune-media/default", "rune-text/default"]
+default = ["accessibility", "dbus", "embedded-fonts", "hunspell", "metal-backend", "ogg-audio", "png", "svg", "wayland-csd-title", "rune-gpu/default", "rune-image/default", "rune-media/default", "rune-text/default"]
 # Bundle Inter (Regular, Medium, SemiBold; on web also IBM Plex Mono) as the fonts text falls back
 # to when the app registers none. Disable when AppSpec::fonts supplies the app's own fonts to omit
 # the bytes (about 1.25 MB native).
@@ -68,6 +68,13 @@ windows-system-material = [
 # decoding it in Rust (symphonia, opuscule) and handing AVPlayer the PCM. Off, those clips
 # fail at once with a clear message.
 ogg-audio = ["rune-media/ogg-audio"]
+# Web (`wasm32`): decode PNG, APNG and ICNS bytes and convert embedded ICC profiles in Rust
+# (`image/png`, `png`, `moxcms`). Off (for example with `default-features = false`), `wasm32`
+# decodes PNG and ICNS through the browser's `createImageBitmap` (with native ICC conversion),
+# encodes `ClipboardImage::from_rgba` / `DragImage::from_rgba` with a tiny stored-block PNG
+# writer, and omits `image`, `png`, `fdeflate`/`flate2`/`miniz_oxide` and `moxcms`. No effect
+# on native targets, which always link the Rust raster codecs.
+png = ["rune-image/png", "dep:image", "dep:png"]
 # SVG and SVGZ images (`ImageCache::svg`, `file`, `load_mime`, and `load` on sniffed SVG bytes), and
 # scalable Linux app icons, rasterized by resvg. Off, those images resolve to `Image::error`.
 svg = ["rune-image/svg", "rune-text/svg"]
@@ -76,11 +83,12 @@ svg = ["rune-image/svg", "rune-text/svg"]
 # rav1d's assembly. Off, AVIF bytes resolve to `Image::error`. No effect on web, where the
 # browser decodes AVIF.
 avif = ["rune-image/avif"]
-# Linux: spell check text fields (`El::spellcheck`) against installed system Hunspell
-# dictionaries via `spellbook` (MPL-2.0) and `unicode-segmentation`. Off (for example with
-# `default-features = false` or a permissive-only licence policy), `spellbook` is not compiled on
-# Linux and `El::spellcheck` falls back to a no-op there. No effect on Windows (`ISpellChecker`),
-# macOS (`NSSpellChecker`), or web (which always enables `rune-spell/hunspell`).
+# Linux and web (`wasm32`): spell check text fields (`El::spellcheck`) against Hunspell
+# dictionaries via `spellbook` (MPL-2.0) and `unicode-segmentation` (installed system dictionaries
+# on Linux, fetched `spell/<tag>.aff`/`.dic` files on web). Off (for example with
+# `default-features = false` or a permissive-only licence policy), `spellbook` and the web
+# dictionary loader are not compiled and `El::spellcheck` falls back to a no-op on Linux and web.
+# No effect on Windows (`ISpellChecker`) or macOS (`NSSpellChecker`).
 hunspell = ["rune-spell/hunspell"]
 # Linux/Wayland: render window titles in `sctk-adwaita`'s client-side headerbar on compositors
 # without server-side decorations (such as GNOME), via `winit/wayland-csd-adwaita` (`ab_glyph`,
@@ -142,9 +150,7 @@ winit = { workspace = true, features = ["rwh_06", "x11", "wayland", "wayland-dlo
 taffy = { workspace = true, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "content_size"] }
 parley = { workspace = true, features = ["std"] }
 bytemuck = { workspace = true }
-png = { workspace = true }
 serde_json = { workspace = true }
-image = { workspace = true, features = ["png"] }
 blake3 = { workspace = true }
 rustc-hash = { workspace = true }
 zeroize = { workspace = true }
@@ -156,6 +162,8 @@ unicode-segmentation = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+image = { workspace = true, features = ["png"] }
+png = { workspace = true }
 pollster = { workspace = true }
 
 # winit's Android backend needs one activity glue to build; Rune's own host
@@ -175,7 +183,8 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control", "image-data"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-rune-spell = { workspace = true, features = ["hunspell"] }
+image = { workspace = true, features = ["png"], optional = true }
+png = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 js-sys = { workspace = true }
@@ -220,7 +229,7 @@ xkbcommon = "0.9"
 # DirectComposition handover (`platform::win32::dcomp_handover`), OLE drag and drop
 # (`drag_out::windows`, `platform::win32::drop_target`), jump lists and the taskbar button's
 # progress and badge (`platform::win32::{jump_list,taskbar}`).
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, features = ["Foundation", "UI_ViewManagement", "Win32_Foundation", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 # `#[windows::core::implement]` (the OLE drop target, `platform::win32::drop_target`) names this crate.
 windows-core = { workspace = true }
 # D3D12 alone: a machine without a hardware D3D12 adapter draws on WARP, D3D12's own software
@@ -322,6 +331,9 @@ name = "installed_families"
 
 [[test]]
 name = "measure_scope"
+
+[[test]]
+name = "setup_measure"
 
 [[test]]
 name = "pixels_streaming"

@@ -624,17 +624,16 @@ impl RuntimeCore {
         if self.pointer_locked() { return; }
         self.wheel_lost();
         self.host.titlebar.leave();
+        self.pointer.hovered = None;
+        self.pointer.hover_hit = None;
+        self.pointer.clear_hover_cache();
         if !self.pointer.captured() {
             self.pointer.pos = None;
-            self.pointer.hovered = None;
-            self.refresh_hover_within();
-            self.refresh_link_hover(false);
         } else {
             self.pointer.set_left(true);
-            self.pointer.hovered = None;
-            self.refresh_hover_within();
-            self.refresh_link_hover(false);
         }
+        self.refresh_hover_within();
+        self.refresh_link_hover(false);
     }
 
     /// A press on an element is held (the hand drives whatever follows it).
@@ -702,7 +701,10 @@ impl RuntimeCore {
             return edge.cursor();
         }
         loop {
-            if let Some(c) = self.tree.nodes[i].handlers.cursor {
+            if let Some(c) = self.tree.nodes[i].handlers.cursor
+                && !(self.tree.nodes[i].text.as_ref().is_some_and(|t| t.flags.has(crate::el::TextFlags::SELECTABLE_CURSOR))
+                    && !self.is_selectable(i))
+            {
                 return c;
             }
             if let Some(pc) = self.commit.defaults.press_cursor {
@@ -869,6 +871,18 @@ impl RuntimeCore {
     /// (`Runtime::set_wheel_glide`), and motion isn't reduced or settled.
     #[inline]
     pub(in crate::runtime) fn wheel_glides(&self) -> bool { self.scroll.wheel_glides(self.reduced_motion, self.settled) }
+
+    #[inline]
+    pub(crate) fn wheel_glide(&self) -> bool { self.scroll.wheel_glide() }
+
+    #[inline]
+    pub(crate) fn set_wheel_glide(&mut self, on: bool) { self.scroll.set_wheel_glide(on); }
+
+    #[inline]
+    pub(crate) fn wheel_line(&self) -> Option<f32> { self.scroll.wheel_line() }
+
+    #[inline]
+    pub(crate) fn set_wheel_line(&mut self, points: Option<f32>) { self.scroll.set_wheel_line(points); }
 
     /// Whole notches of a mouse wheel, `dy` points (positive moves content down): the offset
     /// eases to where they send it as Chromium's does (`runtime/scroll/wheel.rs`), a notch that

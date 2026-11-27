@@ -1,121 +1,487 @@
-//! A picked file as a handle: its name, its path where the platform has one, and a way to read
-//! or write it. Android's document picker and a browser's file input give documents with no
-//! path, so [`Tx::pick_file`](crate::Tx::pick_file) answers with these where
-//! [`Tx::open_file`](crate::Tx::open_file) answers with a `PathBuf`.
+//! Platform-neutral file handles returned by [`Tx::pick_file`](crate::Tx::pick_file),
+//! [`Tx::pick_files`](crate::Tx::pick_files) and [`Tx::pick_save_file`](crate::Tx::pick_save_file).
 
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-/// A file the user picked with [`Tx::pick_file`](crate::Tx::pick_file),
-/// [`Tx::pick_files`](crate::Tx::pick_files) or [`Tx::pick_save_file`](crate::Tx::pick_save_file).
-///
-/// [`Self::read`] and [`Self::write`] take or give the whole file as futures, the shape every
-/// platform can answer. [`Self::reader`] and [`Self::writer`] stream it where the platform has
-/// files to open (not in a browser). All of them do their work where they are called or
-/// awaited: off the UI thread, as from `rune::task::spawn`. The handle is `Send` and cheap to
-/// clone.
-///
-/// ```no_run
-/// # use std::io::Read;
-/// # use rune::{FileDialogOptions, FileHandle, Tx, el};
-/// # struct App { picked: Option<FileHandle> }
-/// # let _ = el()
-/// .on_press_tx(|_: &mut App, tx: &mut Tx| {
-///     tx.pick_file(FileDialogOptions::default(), |s: &mut App, result, _| {
-///         if let Ok(Some(file)) = result { s.picked = Some(file); }
-///     });
-/// })
-/// # ;
-/// # fn load(file: FileHandle) -> std::io::Result<Vec<u8>> {
-/// let mut bytes = Vec::new();
-/// file.reader()?.read_to_end(&mut bytes)?;
-/// # Ok(bytes)
-/// # }
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileHandle {
-    name: String,
-    source: Source,
+/// Backend for a platform- or host-supplied [`FileHandle`] that has no local filesystem path
+/// (for example an Android `content://` document opened through a detached file descriptor or
+/// an iOS security-scoped bookmark).
+pub trait FileHandleProvider: Send + Sync {
+    /// Opens a fresh stream positioned at the start of the file.
+    fn reader(&self) -> io::Result<Box<dyn Read + Send>>;
+
+    /// Opens a fresh stream that replaces the file's contents (truncating write, `"wt"`).
+    /// Read-only providers inherit the default `Unsupported` error.
+    fn writer(&self) -> io::Result<Box<dyn Write + Send>> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "this file handle is read-only"))
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Source {
+/// A platform-neutral handle to a file chosen through [`Tx::pick_file`](crate::Tx::pick_file),
+/// [`Tx::pick_files`](crate::Tx::pick_files), [`Tx::pick_save_file`](crate::Tx::pick_save_file),
+/// or [`FileDialogs::pick_file`](crate::FileDialogs::pick_file) /
+/// [`FileDialogs::pick_files`](crate::FileDialogs::pick_files) /
+/// [`FileDialogs::pick_save_file`](crate::FileDialogs::pick_save_file).
+///
+/// Desktop hosts and headless path fixtures return path-backed handles whose [`path`](Self::path)
+/// is `Some`. Document providers (Android Storage Access Framework `content://` URIs) and web
+/// pickers (`<input type="file">`, File System Access handles) return handles whose
+/// [`path`](Self::path) is `None` without copying into app cache.
+///
+/// Handles are cheaply [`Clone`]able, [`Send`] + [`Sync`], and scoped to the current session/task
+/// (not persisted across launches). Run blocking I/O ([`reader`](Self::reader),
+/// [`writer`](Self::writer), [`read_bytes`](Self::read_bytes), [`write_bytes`](Self::write_bytes))
+/// on a worker thread ([`Latest`](crate::Latest) or [`task::spawn`](crate::task::spawn)), never
+/// on the UI thread. Async [`read`](Self::read) and [`write`](Self::write) work on every target,
+/// including browsers without JSPI.
+#[derive(Clone)]
+pub struct FileHandle(Arc<Inner>);
+
+struct Inner {
+    name: String,
+    backend: Backend,
+}
+
+enum Backend {
     Path(PathBuf),
-    /// A document its platform opens by URI: Android's `content://`.
-    Document(String),
+    Memory(Arc<Mutex<Vec<u8>>>),
+    Provider(Arc<dyn FileHandleProvider>),
+    #[cfg(target_arch = "wasm32")]
+    Web { id: u32 },
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if let Backend::Web { id } = self.backend {
+            js::release_picked_file(id);
+        }
+    }
 }
 
 impl FileHandle {
-    /// The file at `path`, as a desktop's dialog answers.
+    /// Creates a path-backed handle for a local filesystem path.
+    ///
+    /// `name()` returns the path's final component (lossy UTF-8), falling back to the path's
+    /// display string when it has no file name component.
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { name, source: Source::Path(path) }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        Self(Arc::new(Inner { name, backend: Backend::Path(path) }))
     }
 
-    /// A document named `name` that its platform opens by `uri`.
-    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
-    pub(crate) fn document(name: impl Into<String>, uri: impl Into<String>) -> Self {
-        Self { name: name.into(), source: Source::Document(uri.into()) }
+    /// Creates an in-memory handle with no filesystem path, for tests and headless fixtures.
+    /// Clones share the same underlying buffer, so writing through one clone is visible to reads
+    /// from another.
+    pub fn from_bytes(name: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self(Arc::new(Inner {
+            name: name.into(),
+            backend: Backend::Memory(Arc::new(Mutex::new(bytes.into()))),
+        }))
     }
 
-    /// The file's name with its extension, for showing and for telling its type.
+    /// Creates a handle backed by a custom [`FileHandleProvider`] (for example an Android
+    /// `content://` document opened through a detached file descriptor).
+    pub fn from_provider(name: impl Into<String>, provider: impl FileHandleProvider + 'static) -> Self {
+        Self(Arc::new(Inner {
+            name: name.into(),
+            backend: Backend::Provider(Arc::new(provider)),
+        }))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_web(id: u32, name: String) -> Self {
+        Self(Arc::new(Inner { name, backend: Backend::Web { id } }))
+    }
+
+    /// The file's display name (for example `"export.csv"`), without any directory prefix when
+    /// known.
     pub fn name(&self) -> &str {
-        &self.name
+        &self.0.name
     }
 
-    /// The file's path, where the platform's picker gives one: a desktop's does, Android's
-    /// document picker does not.
+    /// The local filesystem path when this handle is path-backed (desktop hosts, headless path
+    /// fixtures), or `None` for document-provider, browser, and in-memory handles.
     pub fn path(&self) -> Option<&Path> {
-        match &self.source {
-            Source::Path(path) => Some(path),
-            Source::Document(_) => None,
+        match &self.0.backend {
+            Backend::Path(path) => Some(path.as_path()),
+            Backend::Memory(_) | Backend::Provider(_) => None,
+            #[cfg(target_arch = "wasm32")]
+            Backend::Web { .. } => None,
         }
     }
 
-    /// Reads the whole file. The shape every platform can answer, a browser's file included;
-    /// on a desktop and on Android the read happens inside the future, as
-    /// `rfd::FileHandle::read`'s does, so await it off the UI thread.
-    pub async fn read(&self) -> io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        self.reader()?.read_to_end(&mut bytes)?;
-        Ok(bytes)
+    /// On web (`wasm32`), returns the underlying browser `File` or `FileSystemFileHandle`
+    /// without copying it into Wasm memory, if this handle was created by the web file picker.
+    #[cfg(target_arch = "wasm32")]
+    pub fn js_file(&self) -> Option<wasm_bindgen::JsValue> {
+        match self.0.backend {
+            Backend::Web { id } => Some(js::picked_file(id)).filter(|v| !v.is_undefined()),
+            _ => None,
+        }
     }
 
-    /// Writes the file anew with `bytes`, replacing what it held. As [`Self::read`], for
-    /// every platform.
-    pub async fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        self.writer()?.write_all(bytes)
-    }
-
-    /// Opens the file to read from its start. Blocks.
+    /// Opens a fresh blocking stream for reading from byte 0. Run on a worker thread
+    /// ([`Latest`](crate::Latest) or [`task::spawn`](crate::task::spawn)), never on the UI thread.
+    ///
+    /// On `wasm32`, browser-picked handles require JSPI task work (`rune_core::task::can_wait`)
+    /// for blocking I/O; use async [`read`](Self::read) on non-JSPI browsers.
     pub fn reader(&self) -> io::Result<Box<dyn Read + Send>> {
-        match &self.source {
-            Source::Path(path) => Ok(Box::new(std::fs::File::open(path)?)),
-            Source::Document(uri) => open_document(uri, false).map(|file| Box::new(file) as Box<dyn Read + Send>),
+        match &self.0.backend {
+            Backend::Path(path) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    Ok(Box::new(std::fs::File::open(path)?))
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = path;
+                    Err(io::Error::new(io::ErrorKind::Unsupported, "local filesystem paths are unsupported on web"))
+                }
+            }
+            Backend::Memory(buf) => {
+                let bytes = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(Box::new(io::Cursor::new(bytes)))
+            }
+            Backend::Provider(provider) => provider.reader(),
+            #[cfg(target_arch = "wasm32")]
+            Backend::Web { id } => Ok(Box::new(io::Cursor::new(web_read_blocking(*id)?))),
         }
     }
 
-    /// Opens the file to write it anew, as after [`Tx::pick_save_file`](crate::Tx::pick_save_file):
-    /// what it held is replaced. Blocks.
+    /// Opens a fresh blocking stream that replaces the file's contents (truncating write,
+    /// matching `std::fs::File::create`, Android `"wt"`, and
+    /// `FileSystemFileHandle.createWritable()`). Run on a worker thread, never on the UI thread.
+    ///
+    /// On `wasm32`, browser save handles require JSPI task work for blocking writes; use async
+    /// [`write`](Self::write) on non-JSPI browsers.
     pub fn writer(&self) -> io::Result<Box<dyn Write + Send>> {
-        match &self.source {
-            Source::Path(path) => Ok(Box::new(std::fs::File::create(path)?)),
-            Source::Document(uri) => open_document(uri, true).map(|file| Box::new(file) as Box<dyn Write + Send>),
+        match &self.0.backend {
+            Backend::Path(path) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    Ok(Box::new(std::fs::File::create(path)?))
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = path;
+                    Err(io::Error::new(io::ErrorKind::Unsupported, "local filesystem paths are unsupported on web"))
+                }
+            }
+            Backend::Memory(buf) => {
+                buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                Ok(Box::new(MemoryWriter(Arc::clone(buf))))
+            }
+            Backend::Provider(provider) => provider.writer(),
+            #[cfg(target_arch = "wasm32")]
+            Backend::Web { id } => {
+                if !rune_core::task::can_wait() {
+                    return Err(web_non_jspi_error());
+                }
+                Ok(Box::new(WebWriter { id: *id, buf: Vec::new(), dirty: true }))
+            }
+        }
+    }
+
+    /// Reads the entire file into memory, blocking the calling worker thread.
+    ///
+    /// On `wasm32`, browser-picked handles require JSPI task work; use async [`read`](Self::read)
+    /// when JSPI is unavailable.
+    pub fn read_bytes(&self) -> io::Result<Vec<u8>> {
+        match &self.0.backend {
+            Backend::Path(path) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    std::fs::read(path)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = path;
+                    Err(io::Error::new(io::ErrorKind::Unsupported, "local filesystem paths are unsupported on web"))
+                }
+            }
+            Backend::Memory(buf) => Ok(buf.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            Backend::Provider(provider) => {
+                let mut r = provider.reader()?;
+                let mut out = Vec::new();
+                r.read_to_end(&mut out)?;
+                Ok(out)
+            }
+            #[cfg(target_arch = "wasm32")]
+            Backend::Web { id } => web_read_blocking(*id),
+        }
+    }
+
+    /// Replaces the file's entire contents with `bytes`, blocking the calling worker thread.
+    ///
+    /// On `wasm32`, browser save handles require JSPI task work; use async [`write`](Self::write)
+    /// when JSPI is unavailable.
+    pub fn write_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        match &self.0.backend {
+            Backend::Path(path) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    std::fs::write(path, bytes)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (path, bytes);
+                    Err(io::Error::new(io::ErrorKind::Unsupported, "local filesystem paths are unsupported on web"))
+                }
+            }
+            Backend::Memory(buf) => {
+                let mut guard = buf.lock().unwrap_or_else(|e| e.into_inner());
+                guard.clear();
+                guard.extend_from_slice(bytes);
+                Ok(())
+            }
+            Backend::Provider(provider) => {
+                let mut w = provider.writer()?;
+                w.write_all(bytes)?;
+                w.flush()
+            }
+            #[cfg(target_arch = "wasm32")]
+            Backend::Web { id } => web_write_blocking(*id, bytes),
+        }
+    }
+
+    /// Asynchronously reads the entire file into memory.
+    ///
+    /// On native targets this runs on Rune's background task pool so it does not block the caller's
+    /// thread or UI event loop. On `wasm32` it awaits the browser `File` / `FileSystemFileHandle`
+    /// directly and works both with and without JSPI.
+    pub async fn read(&self) -> io::Result<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let handle = self.clone();
+            spawn_io(move || handle.read_bytes()).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match &self.0.backend {
+                Backend::Web { id } => web_read_async(*id).await,
+                _ => self.read_bytes(),
+            }
+        }
+    }
+
+    /// Asynchronously replaces the file's entire contents with `bytes`.
+    ///
+    /// On native targets this runs on Rune's background task pool. On `wasm32` it writes to a
+    /// `FileSystemFileHandle` when available or triggers a browser download of `bytes` with
+    /// [`name`](Self::name), working both with and without JSPI.
+    pub async fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let handle = self.clone();
+            let owned = bytes.to_vec();
+            spawn_io(move || handle.write_bytes(&owned)).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match &self.0.backend {
+                Backend::Web { id } => web_write_async(*id, bytes).await,
+                _ => self.write_bytes(bytes),
+            }
         }
     }
 }
 
-#[cfg(target_os = "android")]
-fn open_document(uri: &str, write: bool) -> io::Result<std::fs::File> {
-    crate::platform::android::services::open_document(uri, write).map_err(io::Error::other)
+impl fmt::Debug for FileHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("FileHandle");
+        s.field("name", &self.0.name);
+        if let Some(path) = self.path() {
+            s.field("path", &path);
+        }
+        s.finish()
+    }
 }
 
-#[cfg(not(target_os = "android"))]
-fn open_document(_: &str, _: bool) -> io::Result<std::fs::File> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "this platform opens no documents by URI"))
+const _: fn() = || {
+    fn assert_send_sync_clone<T: Send + Sync + Clone>() {}
+    assert_send_sync_clone::<FileHandle>();
+};
+
+struct MemoryWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for MemoryWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-#[cfg(test)]
-#[path = "handle_tests.rs"]
-mod tests;
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_io<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send + 'static) -> Oneshot<io::Result<T>> {
+    use std::task::Waker;
+    let state: Arc<Mutex<(Option<io::Result<T>>, Option<Waker>)>> = Arc::new(Mutex::new((None, None)));
+    let writer = Arc::clone(&state);
+    if let Err(err) = rune_core::task::spawn("rune-file-handle", move || {
+        let res = work();
+        let waker = {
+            let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
+            guard.0 = Some(res);
+            guard.1.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }) {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.0 = Some(Err(err));
+    }
+    Oneshot(state)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct Oneshot<T>(Arc<Mutex<(Option<T>, Option<std::task::Waker>)>>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> std::future::Future for Oneshot<T> {
+    type Output = T;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(val) = guard.0.take() {
+            std::task::Poll::Ready(val)
+        } else {
+            guard.1 = Some(cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_non_jspi_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "blocking file handle I/O on web requires JSPI task work; use async FileHandle::read/write instead",
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_error_io(err: wasm_bindgen::JsValue) -> io::Error {
+    let msg = err
+        .as_string()
+        .or_else(|| {
+            js_sys::Reflect::get(&err, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+        })
+        .unwrap_or_else(|| format!("{err:?}"));
+    io::Error::other(msg)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn bytes_from_js(val: wasm_bindgen::JsValue) -> io::Result<Vec<u8>> {
+    use wasm_bindgen::JsCast;
+    val.dyn_into::<js_sys::Uint8Array>()
+        .map(|arr| arr.to_vec())
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "browser file handle is no longer available"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_read_blocking(id: u32) -> io::Result<Vec<u8>> {
+    if !rune_core::task::can_wait() {
+        return Err(web_non_jspi_error());
+    }
+    let promise = js::read_picked_file(id);
+    match rune_core::task::wait(&promise) {
+        Some(Ok(val)) => bytes_from_js(val),
+        Some(Err(err)) => Err(js_error_io(err)),
+        None => Err(web_non_jspi_error()),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_write_blocking(id: u32, bytes: &[u8]) -> io::Result<()> {
+    if !rune_core::task::can_wait() {
+        return Err(web_non_jspi_error());
+    }
+    let arr = js_sys::Uint8Array::from(bytes);
+    let promise = js::write_picked_file(id, &arr);
+    match rune_core::task::wait(&promise) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(err)) => Err(js_error_io(err)),
+        None => Err(web_non_jspi_error()),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn web_read_async(id: u32) -> io::Result<Vec<u8>> {
+    let promise = js::read_picked_file(id);
+    let val = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js_error_io)?;
+    bytes_from_js(val)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn web_write_async(id: u32, bytes: &[u8]) -> io::Result<()> {
+    let arr = js_sys::Uint8Array::from(bytes);
+    let promise = js::write_picked_file(id, &arr);
+    wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js_error_io)?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebWriter {
+    id: u32,
+    buf: Vec<u8>,
+    dirty: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Write for WebWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(buf);
+        self.dirty = true;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.dirty {
+            web_write_blocking(self.id, &self.buf)?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for WebWriter {
+    fn drop(&mut self) {
+        if self.dirty {
+            web_write_blocking(self.id, &self.buf).ok();
+            self.dirty = false;
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod js {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen(module = "/src/platform/web/bridge.js")]
+    extern "C" {
+        #[wasm_bindgen(js_name = claimPickedFile)]
+        pub(crate) fn claim_picked_file(id: u32) -> bool;
+        #[wasm_bindgen(js_name = pickedFile)]
+        pub(super) fn picked_file(id: u32) -> JsValue;
+        #[wasm_bindgen(js_name = releasePickedFile)]
+        pub(super) fn release_picked_file(id: u32);
+        #[wasm_bindgen(js_name = readPickedFile)]
+        pub(super) fn read_picked_file(id: u32) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = writePickedFile)]
+        pub(super) fn write_picked_file(id: u32, bytes: &js_sys::Uint8Array) -> js_sys::Promise;
+    }
+}

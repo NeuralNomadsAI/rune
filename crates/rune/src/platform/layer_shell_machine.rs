@@ -107,13 +107,19 @@ pub(crate) mod readiness {
     }
 
     impl State {
-        /// The compositor configured a size, so the surface can be drawn on.
+        /// The compositor configured a size (or closed the surface).
+        #[cfg(test)]
         pub(crate) fn configured(&self) -> bool { !matches!(self, State::Configuring { .. }) }
+
+        /// The compositor has sent at least one `configure` and the surface is still open.
+        #[cfg_attr(not(any(test, all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))), allow(dead_code))]
+        pub(crate) fn is_ready(&self) -> bool { matches!(self, State::Ready { .. }) }
 
         /// The compositor destroyed the surface.
         pub(crate) fn closed(&self) -> bool { matches!(self, State::Closed) }
 
         /// The size the compositor asked for that `dispatch` hasn't read yet.
+        #[cfg(test)]
         pub(crate) fn size(&self) -> Option<(u32, u32)> {
             match self {
                 State::Ready { size, .. } => *size,
@@ -334,6 +340,45 @@ pub(crate) mod keyboard {
         }
     }
 
+    /// Computes `PhysicalInput::Key::text` for an XKB key event, matching the window host
+    /// (`winit`'s Wayland XKB path and `window/keys.rs::platform_text`):
+    /// - Releases, open compose sequences, and cancelled compose sequences produce `None`.
+    /// - A completed compose sequence produces its non-empty composed string.
+    /// - Otherwise prefers `state_utf8` (`xkb_state_key_get_utf8`) when non-empty and free of
+    ///   control characters, falling back to `sym_utf8` (`xkb_keysym_to_utf8`) so `Ctrl+c` /
+    ///   `Ctrl+Shift+c` keep `"c"` / `"C"` and `Enter` / `Escape` / `Tab` / `Backspace` / `Delete`
+    ///   keep their control text while `Shift+Tab` (`ISO_Left_Tab`) stays `None`.
+    pub(crate) fn physical_text(
+        pressed: bool,
+        compose: &ComposeOutcome,
+        state_utf8: &str,
+        sym_utf8: &str,
+    ) -> Option<String> {
+        if !pressed {
+            return None;
+        }
+        match compose {
+            ComposeOutcome::Composing | ComposeOutcome::Cancelled => None,
+            ComposeOutcome::Composed(composed) => {
+                composed.as_deref().filter(|t| !t.is_empty()).map(str::to_owned)
+            }
+            ComposeOutcome::Nothing => {
+                let with_all_mods = (!state_utf8.is_empty()).then_some(state_utf8);
+                let sym = (!sym_utf8.is_empty()).then_some(sym_utf8);
+                crate::window::pick_typed_text(with_all_mods, sym).map(str::to_owned)
+            }
+        }
+    }
+
+    /// The `zwlr_layer_surface_v1` keyboard interactivity mode to request from the compositor.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) enum Interactivity {
+        #[default]
+        None,
+        Exclusive,
+        OnDemand,
+    }
+
     /// Whether a layer-shell overlay with `policy` may request keyboard interactivity on
     /// `zwlr_layer_surface_v1` `layer_version`. On-demand needs version 4; exclusive is in
     /// every version.
@@ -342,6 +387,20 @@ pub(crate) mod keyboard {
             crate::KeyPolicy::None => false,
             crate::KeyPolicy::OnDemand => layer_version >= 4,
             crate::KeyPolicy::Exclusive => true,
+        }
+    }
+
+    /// The `zwlr_layer_surface_v1` keyboard interactivity mode a layer surface asks for when
+    /// `hold_keys` is true, or `Interactivity::None` when false or unsupported by `policy` /
+    /// `layer_version`. On-demand requires version 4; exclusive works on every version.
+    pub(crate) fn interactivity(policy: crate::KeyPolicy, layer_version: u32, hold_keys: bool) -> Interactivity {
+        if !hold_keys || !can_request_keys(policy, layer_version) {
+            return Interactivity::None;
+        }
+        match policy {
+            crate::KeyPolicy::None => Interactivity::None,
+            crate::KeyPolicy::Exclusive => Interactivity::Exclusive,
+            crate::KeyPolicy::OnDemand => Interactivity::OnDemand,
         }
     }
 
@@ -372,148 +431,6 @@ pub(crate) mod keyboard {
             return None;
         }
         String::from_utf8(buf).ok()
-    }
-}
-
-/// Bounded wait for a Wayland layer surface's initial `configure` (or `closed`) event.
-/// Kept here so the deadline, flush-retry, interrupt-retry and timeout logic runs tests on
-/// every host without needing a live Wayland compositor.
-pub(crate) mod configure_wait {
-    use std::time::Duration;
-    use crate::time::Instant;
-
-    /// How long `LayerSurface::new` waits for the compositor's initial `configure` (or `closed`)
-    /// event before giving up so a silent or broken compositor cannot freeze the app.
-    pub(crate) const TIMEOUT: Duration = Duration::from_secs(2);
-
-    /// Result of flushing outgoing Wayland requests.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum Flush {
-        Ok,
-        /// The socket send buffer is full; poll for writability and retry before reading.
-        WouldBlock,
-        Error,
-    }
-
-    /// Result of polling the Wayland socket up to the remaining deadline.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum Poll {
-        /// The socket is readable or reported hangup/error; read events now.
-        Readable,
-        /// Only writability fired while retrying a blocked flush; cancel the read and flush again.
-        WritableOnly,
-        /// The poll timed out without socket activity.
-        TimedOut,
-        /// Interrupted by a signal (`EINTR`); retry with the remaining time.
-        Interrupted,
-        Error,
-    }
-
-    /// Result of reading events from the Wayland socket into the queue.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum Read {
-        Ok,
-        /// Another reader drained the socket or the read would block; retry until the deadline.
-        WouldBlock,
-        Error,
-    }
-
-    /// Outcome of [`wait`].
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum Outcome {
-        /// The surface reached `configure` or `closed` before the deadline.
-        Done,
-        /// The deadline elapsed before `configure` or `closed` arrived.
-        TimedOut,
-        /// Dispatching, flushing, polling or reading failed fatally.
-        Error,
-    }
-
-    /// Platform operations needed by [`wait`]: dispatching pending events, flushing outgoing
-    /// requests, and preparing, polling and reading the Wayland socket.
-    pub(crate) trait Driver {
-        /// Guard representing a prepared Wayland socket read. Dropping it without calling
-        /// [`Self::read`] cancels the prepared read.
-        type Guard;
-        /// Whether `configure` or `closed` has already been dispatched.
-        fn done(&self) -> bool;
-        /// Current monotonic time.
-        fn now(&mut self) -> Instant;
-        /// Dispatches already-queued events; `false` on a fatal dispatch error.
-        fn dispatch_pending(&mut self) -> bool;
-        /// Flushes outgoing requests to the compositor.
-        fn flush(&mut self) -> Flush;
-        /// Prepares a synchronized read, or returns `None` when events are already pending in
-        /// the queue and must be dispatched first.
-        fn prepare_read(&mut self) -> Option<Self::Guard>;
-        /// Polls the socket up to `timeout_ms` milliseconds (also watching for writability when
-        /// `want_write` is true).
-        fn poll(&mut self, guard: &Self::Guard, timeout_ms: i32, want_write: bool) -> Poll;
-        /// Reads socket events into the queue, consuming the prepared-read guard.
-        fn read(&mut self, guard: Self::Guard) -> Read;
-    }
-
-    /// Converts a non-zero remaining duration into a positive millisecond timeout for `poll(2)`,
-    /// rounding sub-millisecond remainders up to 1 ms and clamping to `i32::MAX`.
-    pub(crate) fn timeout_ms(remaining: Duration) -> i32 {
-        let millis = remaining.as_millis();
-        let rounded = if remaining.subsec_nanos() % 1_000_000 != 0 {
-            millis.saturating_add(1)
-        } else {
-            millis
-        };
-        rounded.clamp(1, i32::MAX as u128) as i32
-    }
-
-    /// Waits for [`Driver::done`] up to `timeout`, keeping a single overall deadline across
-    /// unrelated Wayland events, `EINTR` interruptions, and `WouldBlock` retries.
-    pub(crate) fn wait<D: Driver>(driver: &mut D, timeout: Duration) -> Outcome {
-        let deadline = driver.now() + timeout;
-        loop {
-            if !driver.dispatch_pending() {
-                return Outcome::Error;
-            }
-            if driver.done() {
-                return Outcome::Done;
-            }
-            let remaining = deadline.saturating_duration_since(driver.now());
-            if remaining.is_zero() {
-                return Outcome::TimedOut;
-            }
-            let want_write = match driver.flush() {
-                Flush::Ok => false,
-                Flush::WouldBlock => true,
-                Flush::Error => return Outcome::Error,
-            };
-            let Some(guard) = driver.prepare_read() else {
-                continue;
-            };
-            match driver.poll(&guard, timeout_ms(remaining), want_write) {
-                Poll::Readable => match driver.read(guard) {
-                    Read::Ok | Read::WouldBlock => {}
-                    Read::Error => return Outcome::Error,
-                },
-                Poll::WritableOnly | Poll::Interrupted => {
-                    drop(guard);
-                }
-                Poll::TimedOut => {
-                    drop(guard);
-                    if !driver.dispatch_pending() {
-                        return Outcome::Error;
-                    }
-                    if driver.done() {
-                        return Outcome::Done;
-                    }
-                    if driver.now() >= deadline {
-                        return Outcome::TimedOut;
-                    }
-                }
-                Poll::Error => {
-                    drop(guard);
-                    return Outcome::Error;
-                }
-            }
-        }
     }
 }
 
@@ -766,6 +683,7 @@ pub(crate) mod watch_loop {
 pub(crate) mod activation;
 pub(crate) mod compose_cache;
 pub(crate) mod frame_callback;
+pub(crate) mod globals_pool;
 pub(crate) mod pointer;
 pub(crate) mod text_input;
 
@@ -867,8 +785,6 @@ pub(crate) mod connection {
 #[cfg(test)]
 #[path = "layer_shell_machine_tests.rs"]
 mod tests;
-#[cfg(test)]
-mod configure_wait_tests;
 #[cfg(test)]
 mod connection_tests;
 #[cfg(test)]

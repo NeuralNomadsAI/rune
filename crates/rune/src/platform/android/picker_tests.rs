@@ -52,12 +52,12 @@ fn one_document_a_cancel_a_failure_and_a_document_to_save() {
     ask(&mut rt, false);
     picker::answer(rt.core_mut(), 2, Ok(None));
     rt.frame(0.0);
-    assert_eq!(rt.state.file.take(), Some(Ok(None)), "the user backed out of the picker");
+    assert!(matches!(rt.state.file.take(), Some(Ok(None))), "the user backed out of the picker");
 
     ask(&mut rt, false);
     picker::answer(rt.core_mut(), 3, Err("no activity to show the document picker".into()));
     rt.frame(0.0);
-    assert_eq!(rt.state.file.take(), Some(Err("no activity to show the document picker".into())));
+    assert!(matches!(rt.state.file.take(), Some(Err(why)) if why == "no activity to show the document picker"));
 
     assert_eq!(ask(&mut rt, true), "4\u{1f}2\u{1f}\u{1f}notes.txt", "a document to create, under the name asked for");
     picker::answer(rt.core_mut(), 4, Ok(Some(vec![document("content://docs/9", "notes.txt")])));

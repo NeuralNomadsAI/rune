@@ -1,14 +1,79 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod completion;
+#[cfg(not(target_arch = "wasm32"))]
 mod frame;
+mod importer;
+
+pub use importer::ImportedSurface;
+pub use importer::SurfaceImporter;
 
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use importer::Imported;
 use rune_core::Blend;
-use std::collections::HashMap;
 
 /// The video pass's shader; on Windows its DX12 bytecode ships precompiled (`dxbc.rs`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) const WGSL: &str = include_str!("video.wgsl");
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub struct Building(std::convert::Infallible);
+
+/// Standalone pipeline, also used by Rune's renderer. Uninhabited on `wasm32` where native
+/// video surfaces are unsupported, so `Option<SurfaceRenderer>` is zero-sized and `video.wgsl`
+/// is omitted from web builds.
+#[cfg(target_arch = "wasm32")]
+pub struct SurfaceRenderer(std::convert::Infallible);
+
+#[cfg(target_arch = "wasm32")]
+impl SurfaceRenderer {
+    pub fn new(_: &wgpu::Device, _: wgpu::TextureFormat) -> Self {
+        panic!("native surfaces are unsupported on web")
+    }
+    #[doc(hidden)]
+    pub fn build(_: &wgpu::Device, _: wgpu::TextureFormat, _: Box<dyn FnOnce() + Send>) -> Building {
+        panic!("native surfaces are unsupported on web")
+    }
+    #[doc(hidden)]
+    pub fn finish(_: &wgpu::Device, _: &Building) -> Option<Self> {
+        None
+    }
+    pub fn set_srgb_blend(&mut self, _: bool) { match self.0 {} }
+    pub fn srgb_blend(&self) -> bool { match self.0 {} }
+    #[doc(hidden)]
+    pub fn set_staging(&mut self, _: rune_staging::Staging) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn add_format(&mut self, _: &wgpu::Device, _: wgpu::TextureFormat) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn add_plus_lighter(&mut self, _: &wgpu::Device, _: wgpu::TextureFormat) { match self.0 {} }
+    pub fn surface_texture(&mut self, _: &wgpu::Queue, _: &NativeSurface) -> Result<Option<ImportedSurface>, String> { match self.0 {} }
+    #[doc(hidden)]
+    pub fn adopt_importer(&mut self, _: SurfaceImporter) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn note_frame_submitted(&self) { match self.0 {} }
+    pub fn prepare(&mut self, _: &wgpu::Device, _: &wgpu::Queue, _: &[SurfaceDraw], _: (u32, u32)) { match self.0 {} }
+    pub fn len(&self) -> usize { match self.0 {} }
+    pub fn is_empty(&self) -> bool { match self.0 {} }
+    #[doc(hidden)]
+    pub fn draws_nothing(&self) -> bool { match self.0 {} }
+    pub fn timestamp_writes(&self) -> Option<wgpu::RenderPassTimestampWrites<'_>> { match self.0 {} }
+    #[doc(hidden)]
+    pub fn draw_main(&self, _: &mut wgpu::RenderPass<'_>, _: usize, _: wgpu::TextureFormat, _: Blend) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn draw_isolated(&self, _: &mut wgpu::RenderPass<'_>, _: usize, _: wgpu::TextureFormat, _: Blend) { match self.0 {} }
+    pub fn before_instance(&self, _: usize) -> u32 { match self.0 {} }
+    #[doc(hidden)]
+    pub fn target(&self, _: &wgpu::Queue, _: usize, _: [f32; 4]) { match self.0 {} }
+    pub fn draw(&self, _: &mut wgpu::RenderPass<'_>, _: usize) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn draw_format(&self, _: &mut wgpu::RenderPass<'_>, _: usize, _: wgpu::TextureFormat) { match self.0 {} }
+    #[doc(hidden)]
+    pub fn draw_blended(&self, _: &mut wgpu::RenderPass<'_>, _: usize, _: wgpu::TextureFormat, _: Blend) { match self.0 {} }
+    pub fn submit(&self, _: &wgpu::Queue, _: wgpu::CommandEncoder) -> wgpu::SubmissionIndex { match self.0 {} }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn blend_state(blend: Blend) -> wgpu::BlendState {
     match blend {
         Blend::SourceOver => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
@@ -24,8 +89,8 @@ fn blend_state(blend: Blend) -> wgpu::BlendState {
 }
 
 /// A renderer whose pipeline compiles on a thread of its own (`SurfaceRenderer::build`).
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct Building {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
@@ -36,17 +101,7 @@ pub struct Building {
     punch: std::sync::Mutex<Option<std::sync::mpsc::Receiver<wgpu::RenderPipeline>>>,
 }
 
-pub(crate) struct Imported {
-    frame: Arc<Frame>,
-    textures: [wgpu::Texture; 2],
-    /// Whether `textures` come from a bounded pool or decoder ring that may be returned again,
-    /// so caching their bind group in `Prepared::binds` avoids per-frame reallocation without
-    /// retaining one-shot textures.
-    reusable: bool,
-    /// Keeps a pooled copy target reserved while this `Imported` is live (in `cache`,
-    /// `Prepared`, or an in-flight `SurfaceRenderer::submit` callback).
-    _lease: Option<Arc<()>>,
-}
+#[cfg(not(target_arch = "wasm32"))]
 struct Prepared {
     drawn: std::sync::atomic::AtomicBool,
     before: u32,
@@ -75,19 +130,23 @@ const CLEAR: wgpu::BlendComponent = wgpu::BlendComponent { src_factor: wgpu::Ble
 // a query set for every queued frame. Timing may be omitted; rendering never waits.
 #[cfg(not(target_arch = "wasm32"))]
 const TIMING_SLOTS: u32 = 8;
+#[cfg(not(target_arch = "wasm32"))]
 struct TimingPool {
     queries: wgpu::QuerySet,
     free: std::sync::Mutex<Vec<u32>>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl TimingPool {
     fn take(self: &Arc<Self>) -> Option<Arc<TimingSlot>> {
         self.free.lock().unwrap().pop().map(|start| Arc::new(TimingSlot { pool: self.clone(), start }))
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 struct TimingSlot {
     pool: Arc<TimingPool>,
     start: u32,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for TimingSlot {
     fn drop(&mut self) {
         self.pool.free.lock().unwrap().push(self.start);
@@ -96,6 +155,7 @@ impl Drop for TimingSlot {
 
 /// Standalone pipeline, also used by Rune's renderer. A frame must be submitted through `submit`
 /// for timing notifications; texture lifetimes are safe even with ordinary wgpu submission.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct SurfaceRenderer {
     /// The queue timestamp resolves go to, held here so their callbacks hold it weakly.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -105,8 +165,6 @@ pub struct SurfaceRenderer {
     /// Timestamp resolves a completion callback couldn't submit yet (`completion::Parked`).
     #[cfg(not(target_arch = "wasm32"))]
     resolves: Arc<completion::Parked<completion::Resolve>>,
-    #[cfg(target_os = "linux")]
-    dmabuf: Option<linux::Importer>,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     device: wgpu::Device,
     timing_pool: Option<Arc<TimingPool>>,
@@ -118,7 +176,7 @@ pub struct SurfaceRenderer {
     additive: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    cache: HashMap<usize, Arc<Imported>>,
+    importer: SurfaceImporter,
     draws: Vec<Prepared>,
     /// Surfaces whose place is punched out (by key), and the pipeline that does it: the video's
     /// coverage, opacity and clip, writing `dst * (1 - coverage)` to colour and alpha alike.
@@ -129,42 +187,19 @@ pub struct SurfaceRenderer {
     srgb_blend: bool,
     /// The owning `Renderer`'s uploads, when it has one; queue writes otherwise.
     staging: Option<rune_staging::Staging>,
-    #[cfg(target_os = "macos")]
-    importer: Option<macos::Importer>,
-    #[cfg(target_os = "windows")]
-    shared: Option<windows::Importer>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for SurfaceRenderer {
     fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Release the queue before joining so any in-flight completion callback won't submit
-            // another timestamp resolve to a renderer that is going away.
-            self.timing_queue.take();
-            self.completion.stop();
-        }
-        #[cfg(target_os = "linux")]
-        if let Some(dmabuf) = &mut self.dmabuf {
-            dmabuf.stop();
-        }
+        // Release the queue before joining so any in-flight completion callback won't submit
+        // another timestamp resolve to a renderer that is going away.
+        self.timing_queue.take();
+        self.completion.stop();
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SurfaceRenderer {
-    #[cfg(target_arch = "wasm32")]
-    pub fn new(_: &wgpu::Device, _: wgpu::TextureFormat) -> Self {
-        panic!("native surfaces are unsupported on web")
-    }
-    #[cfg(target_arch = "wasm32")]
-    #[doc(hidden)]
-    pub fn build(_: &wgpu::Device, _: wgpu::TextureFormat, _: Box<dyn FnOnce() + Send>) -> Building {
-        panic!("native surfaces are unsupported on web")
-    }
-    #[cfg(target_arch = "wasm32")]
-    #[doc(hidden)]
-    pub fn finish(_: &wgpu::Device, _: &Building) -> Option<Self> {
-        None
-    }
 
     /// Creates a native surface renderer targeting `format`.
     ///
@@ -252,8 +287,6 @@ impl SurfaceRenderer {
             timing_queue: std::sync::OnceLock::new(),
             completion,
             resolves,
-            #[cfg(target_os = "linux")]
-            dmabuf: None,
             device: device.clone(),
             timing_pool,
             queries: None,
@@ -264,17 +297,13 @@ impl SurfaceRenderer {
             additive: None,
             layout,
             sampler,
-            cache: HashMap::new(),
+            importer: SurfaceImporter::new(device),
             draws: Vec::new(),
             punched: Vec::new(),
             punch: None,
             punch_building: None,
             srgb_blend: matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm),
             staging: None,
-            #[cfg(target_os = "macos")]
-            importer: None,
-            #[cfg(target_os = "windows")]
-            shared: None,
         }
     }
 
@@ -416,9 +445,41 @@ impl SurfaceRenderer {
         }
     }
 
+    /// Imports `surface`'s current frame onto this renderer's GPU device, sharing the
+    /// per-device texture cache with [`Self::prepare`].
+    ///
+    /// Returns `Ok(None)` when `surface` holds no frame, `Ok(Some(_))` with the imported GPU
+    /// texture plane(s) and colour/orientation metadata, or `Err` on import failure.
+    pub fn surface_texture(
+        &mut self,
+        queue: &wgpu::Queue,
+        surface: &NativeSurface,
+    ) -> Result<Option<ImportedSurface>, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let res = self.importer.import_with(queue, surface, Some(&self.completion));
+        #[cfg(target_arch = "wasm32")]
+        let res = self.importer.import_with(queue, surface);
+        res
+    }
+
+    /// Transfers an existing per-device [`SurfaceImporter`] (from a compositor that sampled a
+    /// surface before any `El::native_surface` built this renderer) so both paths share one cache.
+    #[doc(hidden)]
+    pub fn adopt_importer(&mut self, #[cfg_attr(target_arch = "wasm32", allow(unused_mut))] mut importer: SurfaceImporter) {
+        #[cfg(not(target_arch = "wasm32"))]
+        importer.stop_own_completion();
+        self.importer = importer;
+    }
+
+    /// Advances the importer's frame generation after a plain submission that bypassed [`Self::submit`].
+    #[doc(hidden)]
+    pub fn note_frame_submitted(&self) {
+        self.importer.note_frame_submitted();
+    }
+
     #[cfg(all(test, target_os = "macos"))]
     pub(super) fn live_planes(&self) -> usize {
-        self.importer.as_ref().map_or(0, |i| i.live_planes.load(std::sync::atomic::Ordering::SeqCst))
+        self.importer.live_planes()
     }
 
     #[cfg(test)]
@@ -428,7 +489,12 @@ impl SurfaceRenderer {
 
     #[cfg(all(test, target_os = "windows"))]
     pub(super) fn windows_importer(&self) -> Option<&windows::Importer> {
-        self.shared.as_ref()
+        self.importer.windows_importer()
+    }
+
+    #[cfg(test)]
+    pub(super) fn cached_import_count(&self) -> usize {
+        self.importer.cached_len()
     }
 
     #[cfg(target_os = "windows")]

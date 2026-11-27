@@ -3,12 +3,26 @@
 //! `None` by default, and a `None` entry keeps the control's built-in look, which follows the
 //! kit's other tokens (`radius`, `ty`, `c`) as they are when the control is built.
 
-use rune::{Color, TextStyle};
+use rune::{Color, El, TextStyle};
 
 use crate::{ControlSize, Kit};
 
 pub(crate) fn non_neg(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
+}
+
+pub(crate) fn unit_alpha(v: f32) -> f32 {
+    if v.is_nan() {
+        1.0
+    } else if !v.is_finite() {
+        if v.is_sign_positive() { 1.0 } else { 0.0 }
+    } else if v <= 0.0 {
+        0.0
+    } else if v >= 1.0 {
+        1.0
+    } else {
+        v
+    }
 }
 
 /// One value per [`ControlSize`].
@@ -262,35 +276,48 @@ impl SegmentedMetrics {
     }
 }
 
-/// A linear [`Progress`](crate::Progress) bar's track height and rim width.
+/// A linear [`Progress`](crate::Progress) bar's track height, rim width and fill corner radius.
 ///
 /// ```
 /// # use rune_kit::{Kit, Progress, ProgressMetrics};
 /// let mut k = Kit::neutral(true);
 /// k.metrics.progress = Some(ProgressMetrics { border_width: 0.0, ..ProgressMetrics::kit(&k) });
 /// let _ = Progress::new(Some(0.6)).build(&k);
+///
+/// // A slim 4-point bar with no rim and a square fill end inside the rounded track.
+/// k.metrics.progress = Some(ProgressMetrics { height: 4.0, border_width: 0.0, fill_radius: 0.0 });
+/// let _ = Progress::new(Some(0.4)).build(&k);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProgressMetrics {
     pub height: f32,
     /// Track rim width; `0.0` omits the border.
     pub border_width: f32,
+    /// Corner radius of the filled bar (`999.0` for a pill end; `0.0` ends the fill square while
+    /// the track still clips it inside its rounded ends).
+    pub fill_radius: f32,
 }
 
 impl ProgressMetrics {
-    /// The built-in track: 8 points tall with a 1 point rim.
+    /// The built-in track: 8 points tall with a 1 point rim and a pill fill (`fill_radius: 999.0`).
     pub fn kit(_k: &Kit) -> ProgressMetrics {
-        ProgressMetrics { height: 8.0, border_width: 1.0 }
+        ProgressMetrics { height: 8.0, border_width: 1.0, fill_radius: 999.0 }
     }
 }
 
-/// A [`Keybind`](crate::Keybind) keycap's height (and minimum width), horizontal padding and
-/// corner radius.
+/// A [`Keybind`](crate::Keybind) keycap's height (and minimum width), horizontal padding,
+/// corner radius, optional border rim, and label text style.
 ///
 /// ```
 /// # use rune_kit::{Keybind, KeybindMetrics, Kit};
 /// let mut k = Kit::neutral(true);
-/// k.metrics.keybind = Some(KeybindMetrics { height: 18.0, padding_x: 6.0, ..KeybindMetrics::kit(&k) });
+/// k.metrics.keybind = Some(KeybindMetrics {
+///     height: 20.0,
+///     padding_x: 6.0,
+///     border_width: 1.0,
+///     label: k.ty.text_xsmall_medium,
+///     ..KeybindMetrics::kit(&k)
+/// });
 /// let _ = Keybind::new(&["⌘", "K"]).build(&k);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -300,12 +327,27 @@ pub struct KeybindMetrics {
     /// Padding left and right of each keycap's label.
     pub padding_x: f32,
     pub radius: f32,
+    /// Keycap rim width on `Neutral` keycaps; `0.0` omits the border. `Ghost` stays unbordered.
+    pub border_width: f32,
+    /// Keycap border colour once [`Self::border_width`] is positive; fully transparent omits it.
+    pub border_color: Color,
+    /// Label text style.
+    pub label: TextStyle,
 }
 
 impl KeybindMetrics {
-    /// The built-in keycap: 14 points tall, 4 points of side padding and `k.radius.xs` corners.
+    /// The built-in keycap: 14 points tall, 4 points of side padding, `k.radius.xs` corners, no
+    /// border (`k.c.border_base` once [`Self::border_width`] is positive), and `k.ty.small_medium`
+    /// on an 11 point line.
     pub fn kit(k: &Kit) -> KeybindMetrics {
-        KeybindMetrics { height: 14.0, padding_x: 4.0, radius: k.radius.xs }
+        KeybindMetrics {
+            height: 14.0,
+            padding_x: 4.0,
+            radius: k.radius.xs,
+            border_width: 0.0,
+            border_color: k.c.border_base,
+            label: TextStyle { line_height: 11.0, ..k.ty.small_medium },
+        }
     }
 }
 
@@ -476,6 +518,62 @@ impl MenuMetrics {
     }
 }
 
+/// Backdrop blur and surface tint shared by transient overlay surfaces: [`Menu`](crate::Menu)
+/// (and its open submenus), [`Select`](crate::Select)'s listbox, [`PopupList`](crate::PopupList),
+/// [`Popover`](crate::Popover), [`Combobox`](crate::Combobox), [`HoverCard`](crate::HoverCard),
+/// and [`popover::raised`](crate::popover::raised) surfaces mounted with
+/// [`popover::anchored`](crate::popover::anchored).
+///
+/// Off by default (`Kit::metrics.popup_backdrop == None`), so every overlay keeps its opaque
+/// surface fill. Set [`Self::sigma`] to blur what the window draws behind the surface
+/// ([`El::backdrop_blur`](rune::El::backdrop_blur)), and lower [`Self::fill_alpha`] (or set
+/// [`Self::fill`]) so the surface's fill tints the blur rather than covering it opaquely.
+///
+/// Under system Reduce Transparency
+/// ([`Cx::system_reduced_transparency`](rune::Cx::system_reduced_transparency)), Rune
+/// automatically skips the blur pass; leave `popup_backdrop` unset while reduced transparency
+/// is active if the surface fill should also stay opaque.
+///
+/// ```
+/// # use rune_kit::{Kit, PopupBackdrop};
+/// let mut k = Kit::neutral(true);
+/// k.metrics.popup_backdrop = Some(PopupBackdrop::frosted(20.0, 0.78));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PopupBackdrop {
+    /// Gaussian backdrop blur standard deviation in points ([`El::backdrop_blur`](rune::El::backdrop_blur)).
+    /// `0.0` turns blur off; negative or non-finite values clamp to `0.0`.
+    pub sigma: f32,
+    /// Opacity multiplier applied to the surface's theme fill (`c.layer_01` or
+    /// `c.surface_raised`) when [`Self::fill`] is `None`. Clamped to `0.0..=1.0`; `1.0` keeps
+    /// the theme fill unchanged.
+    pub fill_alpha: f32,
+    /// Optional explicit tint colour replacing the surface's default theme fill. When `Some`,
+    /// used as-is (ignoring [`Self::fill_alpha`]).
+    pub fill: Option<Color>,
+}
+
+impl PopupBackdrop {
+    /// No backdrop blur and unchanged theme fill (the built-in default).
+    pub const NONE: PopupBackdrop = PopupBackdrop { sigma: 0.0, fill_alpha: 1.0, fill: None };
+
+    /// The built-in default: no backdrop blur and unchanged theme fill.
+    pub fn kit(_k: &Kit) -> PopupBackdrop {
+        PopupBackdrop::NONE
+    }
+
+    /// Frosted surface: blur behind the overlay at `sigma` points and scale the theme's
+    /// surface fill opacity by `fill_alpha` (clamped to `0.0..=1.0`).
+    pub fn frosted(sigma: f32, fill_alpha: f32) -> PopupBackdrop {
+        PopupBackdrop { sigma: non_neg(sigma), fill_alpha: unit_alpha(fill_alpha), fill: None }
+    }
+
+    /// Frosted surface with an explicit tint `fill` over a `sigma`-point backdrop blur.
+    pub fn tinted(sigma: f32, fill: Color) -> PopupBackdrop {
+        PopupBackdrop { sigma: non_neg(sigma), fill_alpha: 1.0, fill: Some(fill) }
+    }
+}
+
 /// Overrides for metrics some controls otherwise fix in code. `Metrics::default()` overrides
 /// nothing.
 ///
@@ -551,13 +649,13 @@ pub struct Metrics {
     /// [`Collapsible`](crate::Collapsible) and [`Accordion`](crate::Accordion) header row height;
     /// else `32.0`.
     pub disclosure_header_height: Option<f32>,
-    /// Linear [`Progress`](crate::Progress) track height and rim width; else
+    /// Linear [`Progress`](crate::Progress) track height, rim width and fill corner radius; else
     /// [`ProgressMetrics::kit`].
     pub progress: Option<ProgressMetrics>,
     /// [`Divider`](crate::Divider) rule thickness in points; else `1.0`.
     pub divider_thickness: Option<f32>,
-    /// [`Keybind`](crate::Keybind) keycap height, side padding and corner radius; else
-    /// [`KeybindMetrics::kit`].
+    /// [`Keybind`](crate::Keybind) keycap height, side padding, corner radius, border and label
+    /// text style; else [`KeybindMetrics::kit`].
     pub keybind: Option<KeybindMetrics>,
     /// Minimum height for non-auto-growing [`TextArea`](crate::TextArea) boxes; else `80.0`.
     pub text_area_min_height: Option<f32>,
@@ -577,6 +675,11 @@ pub struct Metrics {
     pub popover: Option<PopoverMetrics>,
     /// [`Menu`](crate::Menu) padding, separator spacing, and standard inner border; else [`MenuMetrics::kit`].
     pub menu: Option<MenuMetrics>,
+    /// Backdrop blur and surface tint shared by transient overlay surfaces ([`Menu`](crate::Menu),
+    /// [`Select`](crate::Select), [`PopupList`](crate::PopupList), [`Popover`](crate::Popover),
+    /// [`Combobox`](crate::Combobox), [`HoverCard`](crate::HoverCard), and
+    /// [`popover::raised`](crate::popover::raised)); else [`PopupBackdrop::NONE`].
+    pub popup_backdrop: Option<PopupBackdrop>,
 }
 
 impl Kit {
@@ -620,14 +723,25 @@ impl Kit {
     }
     pub(crate) fn progress_metrics(&self) -> ProgressMetrics {
         let m = self.metrics.progress.unwrap_or_else(|| ProgressMetrics::kit(self));
-        ProgressMetrics { height: non_neg(m.height), border_width: non_neg(m.border_width) }
+        ProgressMetrics {
+            height: non_neg(m.height),
+            border_width: non_neg(m.border_width),
+            fill_radius: non_neg(m.fill_radius),
+        }
     }
     pub(crate) fn divider_thickness(&self) -> f32 {
         non_neg(self.metrics.divider_thickness.unwrap_or(1.0))
     }
     pub(crate) fn keybind_metrics(&self) -> KeybindMetrics {
         let m = self.metrics.keybind.unwrap_or_else(|| KeybindMetrics::kit(self));
-        KeybindMetrics { height: non_neg(m.height), padding_x: non_neg(m.padding_x), radius: non_neg(m.radius) }
+        KeybindMetrics {
+            height: non_neg(m.height),
+            padding_x: non_neg(m.padding_x),
+            radius: non_neg(m.radius),
+            border_width: non_neg(m.border_width),
+            border_color: m.border_color,
+            label: m.label,
+        }
     }
     pub(crate) fn text_area_min_height(&self) -> f32 {
         non_neg(self.metrics.text_area_min_height.unwrap_or(80.0))
@@ -677,5 +791,36 @@ impl Kit {
             standard_separator_below: non_neg(m.standard_separator_below),
             standard_inner_border: non_neg(m.standard_inner_border),
         }
+    }
+    pub(crate) fn popup_backdrop(&self) -> PopupBackdrop {
+        let b = self.metrics.popup_backdrop.unwrap_or(PopupBackdrop::NONE);
+        PopupBackdrop {
+            sigma: non_neg(b.sigma),
+            fill_alpha: unit_alpha(b.fill_alpha),
+            fill: b.fill,
+        }
+    }
+    /// Applies the resolved backdrop blur and surface fill to a transient overlay surface
+    /// element, combining [`Metrics::popup_backdrop`] with any per-instance overrides.
+    pub(crate) fn apply_popup_surface(
+        &self,
+        mut e: El,
+        base_fill: Color,
+        override_sigma: Option<f32>,
+        override_fill: Option<Color>,
+    ) -> El {
+        let b = self.popup_backdrop();
+        let sigma = override_sigma.map(non_neg).unwrap_or(b.sigma);
+        let fill = override_fill.or(b.fill).unwrap_or_else(|| {
+            if b.fill_alpha >= 1.0 {
+                base_fill
+            } else {
+                self.alpha(base_fill, base_fill.a * b.fill_alpha)
+            }
+        });
+        if sigma > 0.0 {
+            e = e.backdrop_blur(sigma);
+        }
+        e.fill(fill)
     }
 }

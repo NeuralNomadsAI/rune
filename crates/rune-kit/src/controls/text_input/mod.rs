@@ -5,7 +5,7 @@ use rune::{Color, El, Icon, RichStyle, Span, TextEdit, TextStyle, Tx, el, icon, 
 
 use crate::{Acts, Kit, State};
 
-fn kit_rich_style(k: &Kit) -> RichStyle {
+pub(crate) fn kit_rich_style(k: &Kit) -> RichStyle {
     RichStyle {
         link: k.c.text_accent,
         code_fg: None,
@@ -19,7 +19,7 @@ fn kit_rich_style(k: &Kit) -> RichStyle {
 /// Shared shell painting (text-input.css:5-75, textarea.css): the base fill, input elevation,
 /// hover overlay, a 1 point focus or invalid ring just inside the box in place of the shadow
 /// (or the kit's own radius and ring, `Kit::metrics.field`), disabled dimming.
-fn shell(k: &Kit, e: El, state: State, invalid: bool, focused: bool) -> El {
+pub(crate) fn shell(k: &Kit, e: El, state: State, invalid: bool, focused: bool) -> El {
     let c = &k.c;
     let m = k.field_metrics();
     let hover = state == State::Hover && !invalid && !focused;
@@ -83,6 +83,11 @@ macro_rules! rich_forwarders {
             self.edits.visual(move |e| e.pill_image(image));
             self
         }
+        /// See [`El::pill_inline_image`](rune::El::pill_inline_image).
+        pub fn pill_inline_image(mut self, image: impl Fn(&str) -> Option<rune::InlineImage> + 'static) -> Self {
+            self.edits.visual(move |e| e.pill_inline_image(image));
+            self
+        }
         /// See [`El::pill_style`](rune::El::pill_style).
         pub fn pill_style(mut self, style: impl Fn(&str) -> rune::PillStyle + 'static) -> Self {
             self.edits.visual(move |e| e.pill_style(style));
@@ -96,6 +101,16 @@ macro_rules! rich_forwarders {
         /// See [`El::pill_copy_text`](rune::El::pill_copy_text).
         pub fn pill_copy_text(mut self, f: impl Fn(&str) -> Option<String> + 'static) -> Self {
             self.edits.visual(move |e| e.pill_copy_text(f));
+            self
+        }
+        /// Virtual keyboard layout and input mode hint ([`El::input_mode`](rune::El::input_mode)).
+        pub fn input_mode(mut self, mode: rune::InputMode) -> Self {
+            self.edits.visual(move |e| e.input_mode(mode));
+            self
+        }
+        /// Browser and OS autofill hint ([`El::autofill`](rune::El::autofill), HTML `autocomplete`).
+        pub fn autofill(mut self, hint: rune::Autofill) -> Self {
+            self.edits.visual(move |e| e.autofill(hint));
             self
         }
     };
@@ -328,7 +343,7 @@ impl EditActs {
 
 /// What assistive technology reads for a field's editor: its name (the label, else the
 /// placeholder), a description, and whether it can be used.
-fn name_field(e: El, label: Option<&str>, placeholder: &str, description: Option<&str>, disabled: bool) -> El {
+pub(crate) fn name_field(e: El, label: Option<&str>, placeholder: &str, description: Option<&str>, disabled: bool) -> El {
     let e = match label.filter(|l| !l.is_empty()).or(Some(placeholder).filter(|p| !p.is_empty())) {
         Some(name) => e.label(name),
         None => e,
@@ -374,12 +389,6 @@ impl TextInput {
     pub fn revealed(mut self, revealed: bool) -> Self {
         self.edit.set_revealed(revealed);
         self.edits.visual(move |e| e.revealed(revealed));
-        self
-    }
-    /// What the field holds, for a touch keyboard to lay itself out by
-    /// ([`El::input_mode`](rune::El::input_mode)).
-    pub fn input_mode(mut self, keyboard: rune::InputMode) -> Self {
-        self.edits.visual(move |e| e.input_mode(keyboard));
         self
     }
     /// Mark misspelled words and offer their suggestions in the field's menu (`El::spellcheck`).

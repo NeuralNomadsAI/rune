@@ -1,0 +1,1 @@
+- Android: `El::input_mode` picks the touch keyboard's layout: the keys for an e-mail or web address, digits for `Numeric`, `Decimal` and `Tel`, a PIN's keyboard for a `secure` number, a search key for `Search`, and no keyboard for `None`.

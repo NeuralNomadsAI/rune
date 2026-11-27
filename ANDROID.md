@@ -120,8 +120,9 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
 - **Files**: `Tx::pick_file`, `Tx::pick_files` and `Tx::pick_save_file` show the system's
   document picker (`Intent.ACTION_OPEN_DOCUMENT` with the filters' extensions as MIME types,
   `ACTION_CREATE_DOCUMENT` to save). It answers with `content://` URIs, which have no path: each
-  is a `FileHandle` with the document's name and `path()` `None`, whose `reader()` and `writer()`
-  open it through the `ContentResolver` (`RuneServices.openDocument`), with nothing copied.
+  is a `FileHandle` with the document's name and `path()` `None`, from a `FileHandleProvider`
+  (`picker.rs`) that opens it through the `ContentResolver` (`RuneServices.openDocument`) for
+  each read or write, with nothing copied.
   `RuneActivity` starts the picker; a host with its own activity sets `RuneView.filePicker` and
   calls `filesPicked`. The dialogs that answer with a path (`Tx::open_file`, `Tx::open_files`,
   `Tx::save_file`) and `Tx::open_folder` are refused with an error.

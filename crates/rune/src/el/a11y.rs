@@ -112,6 +112,47 @@ impl AutoComplete {
     }
 }
 
+/// Which item an element currently represents within a set ([`El::current`]), as ARIA's
+/// `aria-current`.
+///
+/// Leave unset when the element is not current (ARIA's implicit `false` default).
+///
+/// ```
+/// # use rune::{Current, col, el, text};
+/// let nav = col()
+///     .role("navigation")
+///     .label("Sections")
+///     .child(el().key("home").href("/").current(Current::Page).child(text("Home")));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Current {
+    /// Current page within a set of pages (`aria-current="page"`).
+    Page,
+    /// Current step within a process (`aria-current="step"`).
+    Step,
+    /// Current location within a navigation context, such as a breadcrumb (`aria-current="location"`).
+    Location,
+    /// Current date within a collection of dates (`aria-current="date"`).
+    Date,
+    /// Current time within a set of times (`aria-current="time"`).
+    Time,
+    /// Current item within a set when none of the more specific tokens apply (`aria-current="true"`).
+    True,
+}
+
+impl Current {
+    pub(crate) fn as_aria(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Step => "step",
+            Self::Location => "location",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::True => "true",
+        }
+    }
+}
+
 /// A checkbox's, switch's or toggle button's state for accessibility ([`El::checked`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Checked {
@@ -149,6 +190,8 @@ impl Range {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct A11yMore {
     pub description: Option<Cow<'static, str>>,
+    /// `El::role_description` / `El::role_description_static` (ARIA `aria-roledescription`).
+    pub role_description: Option<Cow<'static, str>>,
     pub value: Option<String>,
     pub range: Option<Range>,
     /// 1-based position and the set's size.
@@ -186,6 +229,8 @@ pub(crate) struct A11yMore {
     pub orientation: Option<Orientation>,
     /// How typing suggests or completes values (`El::auto_complete`).
     pub auto_complete: Option<AutoComplete>,
+    /// Which item this element currently represents in a set (`El::current`, ARIA `aria-current`).
+    pub current: Option<Current>,
     /// `El::controls`'s key (ARIA `aria-controls`).
     pub controls: Option<String>,
     /// `El::owns`'s key (ARIA `aria-owns`).
@@ -207,13 +252,16 @@ pub(crate) struct A11y {
     /// `El::unselectable`: a web page's mirror leaves this subtree's text out of the selection.
     pub unselectable: bool,
     pub live: Option<LiveRegion>,
+    /// `El::role("group")` was called explicitly (distinguishes an explicit ARIA `group` role
+    /// from a plain layout container whose default `RoleTag` is `GROUP`).
+    pub explicit_group: bool,
     pub more: Option<Box<A11yMore>>,
 }
 
 impl A11y {
     pub(crate) const EMPTY: A11y = A11y {
         level: None, expanded: None, secure: false, checked: None, disabled: false, hidden: false, unselectable: false,
-        live: None, more: None,
+        live: None, explicit_group: false, more: None,
     };
 
     fn more(&mut self) -> &mut A11yMore {
@@ -258,6 +306,45 @@ impl El {
     /// nothing for it.
     pub fn description_static(mut self, text: &'static str) -> Self {
         self.cold_mut().a11y.more().description = Some(Cow::Borrowed(text));
+        self
+    }
+    /// A human-readable description of the element's role (ARIA `aria-roledescription`), such as
+    /// `"card"` on an `"article"` or `"divider"` on a `"button"`. The element keeps its real role
+    /// so navigation and actions still work while assistive technology names it in the app's
+    /// words. Ignored on elements with no accessible role (a plain container without
+    /// [`El::role`], or `"none"`/`"presentation"`) and when empty or whitespace-only.
+    ///
+    /// ```
+    /// # use rune::{el, text};
+    /// let row = el()
+    ///     .key("row-1")
+    ///     .role("article")
+    ///     .role_description("card")
+    ///     .label("Row one")
+    ///     .child(text("Row one"));
+    /// ```
+    pub fn role_description(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        if text.trim().is_empty() {
+            if let Some(more) = self.cold.a11y.more.as_ref() && more.role_description.is_some() {
+                self.cold_mut().a11y.more().role_description = None;
+            }
+            return self;
+        }
+        self.cold_mut().a11y.more().role_description = Some(Cow::Owned(text));
+        self
+    }
+    /// [`El::role_description`] from a string that lives for the program (a translated message,
+    /// a literal): kept as it is, with nothing copied, so a view that runs every frame pays
+    /// nothing for it.
+    pub fn role_description_static(mut self, text: &'static str) -> Self {
+        if text.trim().is_empty() {
+            if let Some(more) = self.cold.a11y.more.as_ref() && more.role_description.is_some() {
+                self.cold_mut().a11y.more().role_description = None;
+            }
+            return self;
+        }
+        self.cold_mut().a11y.more().role_description = Some(Cow::Borrowed(text));
         self
     }
     /// The element whose content is active while this one keeps keyboard focus (ARIA
@@ -493,6 +580,22 @@ impl El {
         self.cold_mut().a11y.more().auto_complete = Some(mode);
         self
     }
+    /// Marks this element as the current item within a set (ARIA `aria-current`), such as the
+    /// active page in a navigation landmark, the active step in a wizard, or today's cell in a
+    /// calendar. Leave unset when the element is not current.
+    ///
+    /// ```
+    /// # use rune::{Current, col, el, text};
+    /// let nav = col()
+    ///     .role("navigation")
+    ///     .label("Sections")
+    ///     .child(el().key("home").href("/").current(Current::Page).child(text("Home")))
+    ///     .child(el().key("settings").href("/settings").child(text("Settings")));
+    /// ```
+    pub fn current(mut self, current: Current) -> Self {
+        self.cold_mut().a11y.more().current = Some(current);
+        self
+    }
     /// The element whose contents or presence this element controls (ARIA `aria-controls`),
     /// such as a tab naming its panel or a popup trigger naming its menu or listbox. `key`
     /// resolves nearest-scope-first (own subtree, then enclosing ancestors) with fallback to
@@ -654,6 +757,55 @@ impl El {
         }));
         self
     }
+
+    /// Add a named custom accessibility action on this element (VoiceOver's Actions rotor on
+    /// macOS, AT-SPI's `Action` interface on Linux, and visually hidden action buttons in the
+    /// web accessibility mirror).
+    ///
+    /// Use this on composite rows or cards whose secondary actions (such as "Open", "Pin", or
+    /// "More") appear only on hover or focus, so screen reader users can discover and invoke
+    /// them directly from the element without mounting extra Tab stops on every row.
+    ///
+    /// Repeatable: call once per action. Calling again with the same `id` updates that action's
+    /// label and handler in place. An empty `id` or blank `label` is ignored. Custom actions are
+    /// advertised only while the element is enabled, non-inert, and not occluded by a modal; they
+    /// do not alter the element's role, focusability, or pointer hit testing.
+    ///
+    /// ```
+    /// # use rune::{el, text};
+    /// # struct State { opened: bool, more: bool }
+    /// let _row = el()
+    ///     .key("row-1")
+    ///     .role("article")
+    ///     .label("Row one")
+    ///     .focusable(true)
+    ///     .a11y_action("open", "Open", |s: &mut State, _| s.opened = true)
+    ///     .a11y_action("more", "More", |s: &mut State, _| s.more = true)
+    ///     .child(text("Row one"));
+    /// ```
+    pub fn a11y_action<S: 'static>(
+        mut self,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        f: impl Fn(&mut S, &mut crate::el::Tx) + 'static,
+    ) -> Self {
+        let id = id.into();
+        let label = label.into();
+        if id.is_empty() || label.trim().is_empty() {
+            return self;
+        }
+        let handler: crate::el::PressFn = std::rc::Rc::new(move |s, tx| {
+            f(crate::states::downcast::<S>(s), tx)
+        });
+        let actions = self.handlers.custom_a11y_actions.get_or_insert_with(Default::default);
+        if let Some(existing) = actions.iter_mut().find(|a| a.id == id) {
+            existing.label = label;
+            existing.handler = handler;
+        } else {
+            actions.push(crate::el::CustomA11yAction { id, label, handler });
+        }
+        self
+    }
 }
 
 impl El {
@@ -671,6 +823,11 @@ impl El {
     #[inline]
     pub fn set_role(&mut self, role: &'static str) -> &mut Self {
         self.set_role_name(role);
+        if role == "group" {
+            self.cold_mut().a11y.explicit_group = true;
+        } else if self.cold.a11y.explicit_group {
+            self.cold_mut().a11y.explicit_group = false;
+        }
         self
     }
     #[inline]

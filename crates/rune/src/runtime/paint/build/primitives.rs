@@ -51,7 +51,7 @@ impl RuntimeCore {
         mark_ranges: &[(usize, usize, usize)],
         video_signature: &mut u64,
         glyph_count: &mut usize,
-    ) -> Option<usize> {
+    ) -> (Option<usize>, Option<usize>) {
         let n = &self.tree.nodes[i];
         let mut faded_slot = None;
         // Disabled styling is distributed to each authored paint leaf at build time.
@@ -88,7 +88,7 @@ impl RuntimeCore {
         };
         #[cfg(not(any(test, all(target_os = "windows", feature = "windows-system-material"))))]
         let _ = material_draw;
-        let stuck_k = if self.tree.has_sticky { (self.scroll.stuck[i].abs() / sticky::SHADOW_RAMP).min(1.0) } else { 0.0 };
+        let stuck_k = self.stuck_shadow_alpha(i);
         let stuck_shadows: (f32, &[crate::el::Shadow]) = match &n.sticky {
             Some(s) if stuck_k > 0.0 => (stuck_k, &s.shadows),
             _ => (0.0, &[]),
@@ -491,7 +491,7 @@ impl RuntimeCore {
         } else {
             clip
         };
-        self.paint_content(
+        let text_start = self.paint_content(
             i,
             paint_content::LeafBox {
                 r,
@@ -530,7 +530,7 @@ impl RuntimeCore {
             mark_ranges,
             glyph_count,
         );
-        faded_slot
+        (faded_slot, text_start)
     }
 }
 

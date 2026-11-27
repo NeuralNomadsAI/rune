@@ -1,5 +1,6 @@
-//! Measuring text from a view, for views that place things themselves (table columns, diagram
-//! nodes). While a window's view runs, its measures use the window's own text system (`lend`).
+//! Measuring text from a view or setup callback, for code that places things itself (table
+//! columns, diagram nodes). While a window's or overlay's `setup` or view runs, its measures use
+//! the window's own text system (`lend`).
 //! Elsewhere each thread keeps one of its own, resolved in order: an active [`with_families`] or
 //! [`with_fonts`] guard on this thread, else the fonts and families this thread's own most recent
 //! [`TextSystem`] was given, else the process-wide ones from the latest unguarded [`TextSystem`]
@@ -74,16 +75,10 @@ thread_local! {
     static OVERRIDE: RefCell<Option<Fonts>> = const { RefCell::new(None) };
     /// The fonts and families this thread's own [`TextSystem`]s were built or updated with.
     static THREAD_FONTS: RefCell<Option<Fonts>> = const { RefCell::new(None) };
-    /// The text system of the window whose view is running on this thread (`lend`), if any.
+    /// The text system of the window or overlay whose setup or view is running on this thread (`lend`), if any.
     static LENT: RefCell<Option<TextSystem>> = const { RefCell::new(None) };
 }
 
-/// Runs `f` (a window's view) with [`measure`] and the rest using `text`, the window's own text
-/// system, rather than this thread's copy. The copy loads every font and fallback again (a title
-/// with one Arabic or emoji character costs 6-30 ms its first time), and its shapes aren't the ones
-/// the window lays out. Moves `text` into thread-local storage for the duration of `f` and restores
-/// it on return or unwind.
-#[doc(hidden)]
 /// Trims this thread's fallback measurement `TextSystem` (when one was created) at rest.
 pub(crate) fn rest() {
     MEASURER.try_with(|cell| {
@@ -95,6 +90,12 @@ pub(crate) fn rest() {
     }).ok();
 }
 
+/// Runs `f` (a window's or overlay's `setup` or view) with [`measure`] and the rest using
+/// `text`, the runtime's own text system, rather than this thread's copy. The copy loads every
+/// font and fallback again (a title with one Arabic or emoji character costs 6-30 ms its first
+/// time), and its shapes aren't the ones the window lays out. Moves `text` into thread-local
+/// storage for the duration of `f` and restores it on return or unwind.
+#[doc(hidden)]
 pub fn lend<R>(text: &mut TextSystem, f: impl FnOnce() -> R) -> R {
     struct Restore<'a> {
         dest: &'a mut TextSystem,
@@ -286,7 +287,7 @@ pub struct FamiliesGuard {
 impl Drop for FamiliesGuard {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        OVERRIDE.with_borrow_mut(|o| *o = previous);
+        let _ = OVERRIDE.try_with(|o| *o.borrow_mut() = previous);
     }
 }
 
@@ -348,7 +349,7 @@ pub struct FontsGuard {
 impl Drop for FontsGuard {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        OVERRIDE.with_borrow_mut(|o| *o = previous);
+        let _ = OVERRIDE.try_with(|o| *o.borrow_mut() = previous);
     }
 }
 
@@ -1015,5 +1016,29 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn dropping_override_guards_at_thread_exit_after_override_destroyed_does_not_abort() {
+        thread_local! {
+            static HELD_FAMILIES: RefCell<Option<FamiliesGuard>> = const { RefCell::new(None) };
+            static HELD_FONTS: RefCell<Option<FontsGuard>> = const { RefCell::new(None) };
+        }
+
+        std::thread::spawn(|| {
+            HELD_FAMILIES.with(|slot| assert!(slot.borrow().is_none()));
+            let guard = with_families("Inter", "ui-monospace");
+            HELD_FAMILIES.with(|slot| *slot.borrow_mut() = Some(guard));
+        })
+        .join()
+        .expect("thread with TLS FamiliesGuard exited cleanly");
+
+        std::thread::spawn(|| {
+            HELD_FONTS.with(|slot| assert!(slot.borrow().is_none()));
+            let guard = with_fonts(&[], ("Inter", "ui-monospace"));
+            HELD_FONTS.with(|slot| *slot.borrow_mut() = Some(guard));
+        })
+        .join()
+        .expect("thread with TLS FontsGuard exited cleanly");
     }
 }

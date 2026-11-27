@@ -339,9 +339,17 @@ impl<S: 'static> Runtime<S> {
     #[inline(always)]
     pub fn set_system_increased_contrast(&mut self, on: bool) { self.core_mut().set_system_increased_contrast(on); }
     #[inline(always)]
+    pub fn set_system_reduced_transparency(&mut self, reduced: bool) { self.core_mut().set_system_reduced_transparency(reduced); }
+    #[inline(always)]
+    pub fn system_reduced_transparency(&self) -> bool { self.core().host.system_reduced_transparency() }
+    #[inline(always)]
     pub fn set_system_reduced_motion(&mut self, reduced: bool) { self.core_mut().set_system_reduced_motion(reduced); }
     #[inline(always)]
     pub fn system_reduced_motion(&self) -> bool { self.core().host.system_reduced_motion() }
+    #[inline(always)]
+    pub fn set_system_text_scale(&mut self, scale: f32) { self.core_mut().set_system_text_scale(scale); }
+    #[inline(always)]
+    pub fn system_text_scale(&self) -> f32 { self.core().system_text_scale() }
     /// Sets the preferred language list reported by [`Cx::system_languages`] and [`Cx::locale`]
     /// as BCP 47 tags in preference order, overriding the lazily queried platform languages.
     /// Empty and duplicate tags are dropped; a change re-runs the view and its memos.
@@ -893,6 +901,12 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn web_secure_replace(&mut self, key: &str, text: String) {
         let (core, mut app) = self.split_mut();
         core.web_secure_replace(&mut app, key, text);
+    }
+    #[cfg(any(test, target_arch = "wasm32"))]
+    #[inline(always)]
+    pub(crate) fn web_autofill(&mut self, key: &str, text: String, secure: bool) {
+        let (core, mut app) = self.split_mut();
+        core.web_autofill(&mut app, key, text, secure);
     }
     #[cfg(any(test, target_arch = "wasm32"))]
     #[inline(always)]
