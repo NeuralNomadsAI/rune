@@ -86,6 +86,10 @@ pub(crate) struct HostState {
     /// selection toolbar, with handles on the selection's ends: Android. A long press selects
     /// the word under it, as that platform's text does.
     pub(crate) text_menus: bool,
+    /// The host shows file dialogs itself, where an embedded layer otherwise refuses them: it
+    /// takes each with `take_file_dialog` and answers with `answer_file_dialog`. Android.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub(crate) file_dialogs: bool,
     /// A finger tapped a text field on such a host (`RuntimeCore::take_field_tap`).
     pub(crate) field_tap: bool,
     /// Pop-up menus asked for (`Tx::popup_menu`) and not yet answered, oldest first.
@@ -177,6 +181,7 @@ impl HostState {
             url_scheme_requests: Vec::new(),
             open_urls_natively: false,
             text_menus: false,
+            file_dialogs: false,
             field_tap: false,
             popups: Default::default(),
             popup_fallback: Default::default(),

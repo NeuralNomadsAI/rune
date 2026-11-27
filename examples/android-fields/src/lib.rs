@@ -1,11 +1,14 @@
 //! A field of each kind, to check on a device which keyboard each one raises: several lines,
 //! one line (its action key submits, with a haptic), a secret, and one for each
-//! `InputMode`.
+//! `InputMode`; and two buttons that pick documents to read and one to write (`Tx::pick_files`,
+//! `Tx::pick_save_file`), read and written off the UI thread through their `FileHandle`s.
 //! `scripts/android-run.sh --app fields`.
 
 
 use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, Haptic, HapticOutcome, InputMode, ScrollSpec, TextEdit, col, edit_access, text, text_input};
+use std::io::{Read, Write};
+
+use rune::{AppSpec, Cx, El, FileDialogOptions, FileHandle, Haptic, HapticOutcome, InputMode, Latest, ScrollSpec, TextEdit, Tx, col, edit_access, text, text_input};
 
 /// One-line fields that say what they hold.
 const KINDS: [(&str, InputMode); 7] = [
@@ -25,6 +28,33 @@ struct State {
     pin: TextEdit,
     kinds: [TextEdit; KINDS.len()],
     submitted: String,
+    /// What became of the documents last picked: a line each, or why there is none.
+    picked: Vec<String>,
+    /// The documents being read or written, off the UI thread.
+    files: Latest<Vec<String>>,
+}
+
+/// "name: N bytes read", and whether the platform gave the document a path.
+fn read(file: &FileHandle) -> String {
+    let mut bytes = Vec::new();
+    let read = file.reader().and_then(|mut reader| reader.read_to_end(&mut bytes));
+    let place = if file.path().is_some() { "has a path" } else { "no path" };
+    match read {
+        Ok(n) => format!("{}: {n} bytes read, {place}", file.name()),
+        Err(why) => format!("{}: {why}", file.name()),
+    }
+}
+
+fn write(file: &FileHandle) -> String {
+    let text = b"written by Rune through a FileHandle\n";
+    match file.writer().and_then(|mut writer| writer.write_all(text)) {
+        Ok(()) => format!("{}: {} bytes written", file.name(), text.len()),
+        Err(why) => format!("{}: {why}", file.name()),
+    }
+}
+
+fn button(label: &'static str, key: &'static str, t: &tok::Theme) -> El {
+    text(label).key(key).role("button").focusable(true).font(type_::TITLE).color(t.text).padding(10.0).radius(8.0).fill(t.control_off)
 }
 
 impl Default for State {
@@ -36,6 +66,8 @@ impl Default for State {
             pin: TextEdit::default().secure(),
             kinds: Default::default(),
             submitted: String::new(),
+            picked: Vec::new(),
+            files: Latest::default(),
         }
     }
 }
@@ -64,13 +96,41 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         let input = text_input(&s.kinds[i], type_::BODY).single_line().input_mode(keyboard).key(label).on_edit(edit_access(move |s: &mut State| &mut s.kinds[i]));
         page = page.child(field(label, input, &t));
     }
-    let page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary));
+    let attach = button("Attach files", "attach", &t).on_press_tx(|_: &mut State, tx: &mut Tx| {
+        tx.pick_files(FileDialogOptions::default(), |s: &mut State, result, _| match result {
+            Ok(Some(files)) => s.files.request(files, |files| files.iter().map(read).collect()),
+            Ok(None) => s.picked = vec!["Nothing picked".to_owned()],
+            Err(why) => s.picked = vec![why.to_string()],
+        });
+    });
+    let save = button("Save a note", "save", &t).on_press_tx(|_: &mut State, tx: &mut Tx| {
+        let options = FileDialogOptions { file_name: Some("rune-note.txt".into()), ..Default::default() }.filter("Text", &["txt"]);
+        tx.pick_save_file(options, |s: &mut State, result, _| match result {
+            Ok(Some(file)) => s.files.request(file, |file| vec![write(&file)]),
+            Ok(None) => s.picked = vec!["Nothing saved".to_owned()],
+            Err(why) => s.picked = vec![why.to_string()],
+        });
+    });
+    let mut page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)).child(attach).child(save);
+    for (i, line) in s.picked.iter().enumerate() {
+        page = page.child(text(line.clone()).key(format!("picked-{i}")).font(type_::BODY).color(t.text_secondary));
+    }
     col().w_full().h_full().pt(top).pr(right).pb(bottom).pl(left).fill(t.bg).child(page)
 }
 
 /// Opens the scene: Android's entry point.
 pub fn main() {
-    rune::run(AppSpec::<State>::new("Fields", (360.0, 640.0), State::default, view));
+    rune::run(AppSpec::<State> {
+        setup: Some(|s: &mut State, waker| s.files.set_waker(waker)),
+        // True only when a read or a write finished, so an idle window draws nothing.
+        poll: Some(|s: &mut State, _, tx: &mut Tx| {
+            let Some(lines) = s.files.take() else { return false };
+            s.picked = lines;
+            tx.instant();
+            true
+        }),
+        ..AppSpec::new("Fields", (360.0, 640.0), State::default, view)
+    });
 }
 
 rune::android_main!(main);

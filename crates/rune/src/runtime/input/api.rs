@@ -494,6 +494,8 @@ impl<S: 'static> Runtime<S> {
     /// ```
     #[inline(always)]
     pub fn file_dialog_multiple(&self) -> bool { self.core().file_dialog_multiple() }
+    /// True when the pending file dialog takes [`FileHandle`](crate::FileHandle)s ([`Tx::pick_file`]).
+    pub fn file_dialog_handles(&self) -> bool { self.core().file_dialog_handles() }
     #[inline(always)]
     pub fn resolve_file_dialog(&mut self, path: Option<PathBuf>) -> Result<(), FileDialogError> {
         self.core_mut().resolve_file_dialog(path)

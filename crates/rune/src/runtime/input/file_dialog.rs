@@ -19,6 +19,12 @@ impl RuntimeCore {
         self.host.file_dialog.pending().is_some_and(|d| d.multiple)
     }
 
+    /// True when the pending file dialog takes [`FileHandle`](crate::FileHandle)s
+    /// ([`Tx::pick_file`]): a host may answer it with documents that have no path.
+    pub fn file_dialog_handles(&self) -> bool {
+        self.host.file_dialog.pending().is_some_and(|d| d.handles)
+    }
+
     /// Answers the file dialog showing as if the user chose `path`, or cancelled with `None`.
     /// Its callback runs on the next frame. For tests and headless drivers; native dialogs
     /// answer themselves.
@@ -65,6 +71,7 @@ impl RuntimeCore {
             id,
             kind: request.kind,
             multiple: request.multiple,
+            handles: request.handles,
             options: request.options,
         });
     }

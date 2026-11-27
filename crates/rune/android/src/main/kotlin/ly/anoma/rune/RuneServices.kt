@@ -14,7 +14,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * The system services Rune calls from Rust, on any thread: the clipboard and links. One per
+ * The system services Rune calls from Rust, on any thread: the clipboard, links and picked documents. One per
  * process, installed by [RuneView] before the app starts.
  */
 class RuneServices private constructor(private val context: Context) {
@@ -95,6 +95,17 @@ class RuneServices private constructor(private val context: Context) {
         "no app opens this link"
     } catch (e: Exception) {
         e.message ?: e.javaClass.simpleName
+    }
+
+    /**
+     * Opens the document at [uri] to read, or to write anew, and hands its descriptor over to
+     * Rust (which closes it); -1 when it can't be opened.
+     */
+    @Suppress("unused")
+    fun openDocument(uri: String, write: Boolean): Int = try {
+        context.contentResolver.openFileDescriptor(Uri.parse(uri), if (write) "wt" else "r")?.detachFd() ?: -1
+    } catch (_: Exception) {
+        -1
     }
 
     private external fun nativeInstall()

@@ -1,13 +1,16 @@
 package ly.anoma.rune
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
@@ -27,6 +30,7 @@ import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.webkit.MimeTypeMap
 
 /**
  * A Rune app's view: a [SurfaceView] Rune draws into, paced by [Choreographer]. Rune keeps the
@@ -366,6 +370,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
             selectionUi.toolbar(it)
         }
         nativeTakeHaptics(handle)?.forEach(::haptic)
+        nativeTakeFilePick(handle)?.let(::pickFiles)
         when {
             next == 0L -> if (!frameQueued) {
                 frameQueued = true
@@ -377,6 +382,55 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
             }
         }
     }
+
+    /**
+     * Shows the system's document picker for a `Tx::pick_file`, `Tx::pick_files` or
+     * `Tx::pick_save_file`. Set by the activity holding this view, which starts [Intent] for a
+     * result and answers with [filesPicked]; false when it could not be started.
+     */
+    var filePicker: ((id: Long, intent: Intent) -> Boolean)? = null
+
+    /** A pick the app asked for: its id, its mode, its extensions and the name to create. */
+    private fun pickFiles(ask: String) {
+        val parts = ask.split(UNIT)
+        val id = parts.getOrNull(0)?.toLongOrNull() ?: return
+        val mode = parts.getOrNull(1)?.toIntOrNull() ?: PICK_ONE
+        val types = parts.getOrNull(2).orEmpty().split(',').filter { it.isNotEmpty() }
+            .map { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.lowercase()) }
+        // An extension Android has no type for can't be asked for: every document shows then.
+        val known = types.filterNotNull().distinct().takeIf { it.size == types.size && it.isNotEmpty() }
+        val intent = if (mode == PICK_SAVE) {
+            Intent(Intent.ACTION_CREATE_DOCUMENT).setType(known?.singleOrNull() ?: "*/*").putExtra(Intent.EXTRA_TITLE, parts.getOrNull(3).orEmpty())
+        } else {
+            Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, mode == PICK_SEVERAL).apply {
+                if (known != null) putExtra(Intent.EXTRA_MIME_TYPES, known.toTypedArray())
+            }
+        }.addCategory(Intent.CATEGORY_OPENABLE)
+        if (filePicker?.invoke(id, intent) != true) schedule(nativeFilesPicked(handle, id, PICK_FAILED, "no activity to show the document picker"))
+    }
+
+    /**
+     * The picker for dialog [id] closed with [uris], or null when the user backed out. Rune
+     * gets each document's URI and name, read off the UI thread, and opens it when the app
+     * reads or writes it (`RuneServices.openDocument`): nothing is copied.
+     */
+    fun filesPicked(id: Long, uris: List<Uri>?) {
+        if (handle == 0L) return
+        if (uris == null) return schedule(nativeFilesPicked(handle, id, PICK_CANCELLED, null))
+        Thread {
+            val text = uris.joinToString(RECORD.toString()) { "$it$UNIT${displayName(it)}" }
+            post { if (handle != 0L) schedule(nativeFilesPicked(handle, id, PICK_DONE, text)) }
+        }.start()
+    }
+
+    /** The document's name as its provider shows it, else the last part of its URI. */
+    private fun displayName(uri: Uri): String = try {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }
+    } catch (_: Exception) {
+        null
+    }?.replace(UNIT, ' ')?.replace(RECORD, ' ')?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment ?: "document"
 
     /** Plays one of Rune's haptics (`Tx::haptic`) with what this API level has for it. */
     private fun haptic(code: Int) {
@@ -435,6 +489,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeTakeHandles(handle: Long): FloatArray?
     private external fun nativeTakeToolbar(handle: Long): String?
     private external fun nativeTakeHaptics(handle: Long): IntArray?
+    private external fun nativeTakeFilePick(handle: Long): String?
+    private external fun nativeFilesPicked(handle: Long, id: Long, status: Int, text: String?): Long
     private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float, fingerY: Float): Long
     private external fun nativeToolbarPicked(handle: Long, index: Int): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
@@ -448,6 +504,14 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_RESTART = 3
         const val KEYBOARD_SELECT = 4
         const val KEYBOARD_REVEAL = 8
+        const val PICK_DONE = 0
+        const val PICK_CANCELLED = 1
+        const val PICK_FAILED = 2
+        const val PICK_ONE = 0
+        const val PICK_SEVERAL = 1
+        const val PICK_SAVE = 2
+        const val UNIT = '\u001f'
+        const val RECORD = '\u001e'
         const val EDITOR_SECURE = 1
         const val EDITOR_ONE_LINE = 2
         const val EDITOR_EMAIL = 1

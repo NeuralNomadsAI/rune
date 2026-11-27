@@ -22,6 +22,7 @@ struct Services {
     set_clipboard_png: jmethodID,
     clear_clipboard: jmethodID,
     open_url: jmethodID,
+    open_document: jmethodID,
 }
 
 // SAFETY: a `JavaVM` pointer, a global reference and method IDs are valid on every thread.
@@ -60,9 +61,10 @@ extern "system" fn Java_ly_anoma_rune_RuneServices_nativeInstall(env: *mut JNIEn
             set_clipboard_png: method(c"setClipboardPng", c"([B)Z"),
             clear_clipboard: method(c"clearClipboard", c"()Z"),
             open_url: method(c"openUrl", c"(Ljava/lang/String;)Ljava/lang/String;"),
+            open_document: method(c"openDocument", c"(Ljava/lang/String;Z)I"),
         };
         call!(env, DeleteLocalRef(class));
-        let methods = [services.clipboard_text, services.clipboard_png, services.set_clipboard_text, services.set_clipboard_png, services.clear_clipboard, services.open_url];
+        let methods = [services.clipboard_text, services.clipboard_png, services.set_clipboard_text, services.set_clipboard_png, services.clear_clipboard, services.open_url, services.open_document];
         if methods.iter().any(|m| m.is_null()) {
             call!(env, ExceptionClear());
             eprintln!("rune: RuneServices is missing a method");
@@ -164,4 +166,18 @@ pub(crate) fn open_url(url: &str) -> Result<(), String> {
             if error.is_null() { Ok(()) } else { Err(java_string(env, error)) }
         }
     }).unwrap_or_else(|| Err("Android's services aren't reachable".into()))
+}
+
+/// Opens the document at `uri` (a picked `content://` one) to read, or to write it anew, as a
+/// file of its own: the `ContentResolver`'s descriptor, detached from Java. Blocks; the error
+/// says why it didn't open.
+pub(crate) fn open_document(uri: &str, write: bool) -> Result<std::fs::File, String> {
+    use std::os::fd::FromRawFd;
+    let fd = with(|s, env| {
+        // SAFETY: as above; the result is a descriptor this side now owns, or negative.
+        unsafe { call!(env, CallIntMethodA(s.object, s.open_document, [jvalue { l: new_string(env, uri) }, jvalue { z: jboolean::from(write) }].as_ptr())) }
+    }).ok_or("Android's services aren't reachable")?;
+    if fd < 0 { return Err("the document could not be opened".into()) }
+    // SAFETY: `detachFd` handed this descriptor over; nothing else closes it.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }

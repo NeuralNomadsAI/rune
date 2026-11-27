@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 use std::rc::Rc;
@@ -23,6 +23,7 @@ use crate::Tx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::Waker;
 
+mod handle;
 #[cfg(all(feature = "native-file-dialog", target_os = "linux"))]
 mod portal;
 #[cfg(any(all(feature = "native-file-dialog", target_os = "linux"), all(test, unix)))]
@@ -31,6 +32,8 @@ mod portal_format;
 pub(crate) use portal::window_focus;
 #[cfg(all(feature = "native-file-dialog", target_os = "linux"))]
 use portal::{show as native, show_files as native_files, show_outcome as portal_show_outcome};
+
+pub use handle::FileHandle;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileDialogOptions {
@@ -103,7 +106,7 @@ impl FileDialogs {
     /// `None` for cancellation.
     ///
     /// ```
-    /// # use std::path::PathBuf;
+    /// # use std::path::{Path, PathBuf};
     /// # use rune::{FileDialogOptions, FileDialogs};
     /// let dialogs = FileDialogs::scripted_files([
     ///     Some(vec![PathBuf::from("/fixture/a.csv"), PathBuf::from("/fixture/b.csv")]),
@@ -126,7 +129,7 @@ impl FileDialogs {
     /// when cancelled.
     ///
     /// ```no_run
-    /// # use std::path::PathBuf;
+    /// # use std::path::{Path, PathBuf};
     /// # use rune::{FileDialogError, FileDialogOptions, FileDialogs};
     /// # fn import(_: PathBuf) {}
     /// # async fn example(dialogs: FileDialogs) -> Result<(), FileDialogError> {
@@ -227,7 +230,7 @@ pub type FileDialogResult = Result<Option<PathBuf>, FileDialogError>;
 /// `Ok(None)` when the user cancels, or why no dialog could show.
 ///
 /// ```
-/// # use std::path::PathBuf;
+/// # use std::path::{Path, PathBuf};
 /// # use rune::FileDialogFilesResult;
 /// let picked: FileDialogFilesResult = Ok(Some(vec![PathBuf::from("a.csv"), PathBuf::from("b.csv")]));
 /// assert_eq!(picked.unwrap().unwrap().len(), 2);
@@ -239,20 +242,35 @@ pub type FileDialogFilesResult = Result<Option<Vec<PathBuf>>, FileDialogError>;
 pub(crate) enum DialogAnswer {
     Single(Option<PathBuf>),
     Many(Option<Vec<PathBuf>>),
+    /// From a host whose picker gives documents with no path, to a dialog that takes handles
+    /// (`Pending::handles`).
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    Handles(Option<Vec<FileHandle>>),
 }
 
 impl DialogAnswer {
     pub(crate) fn into_single(self) -> Option<PathBuf> {
-        match self {
-            Self::Single(path) => path,
-            Self::Many(paths) => paths.and_then(|mut list| if list.is_empty() { None } else { Some(list.remove(0)) }),
-        }
+        self.into_many().and_then(|mut list| if list.is_empty() { None } else { Some(list.remove(0)) })
     }
 
     pub(crate) fn into_many(self) -> Option<Vec<PathBuf>> {
         match self {
             Self::Single(path) => path.map(|p| vec![p]),
             Self::Many(paths) => paths,
+            // A caller that asked for paths gets those the handles have.
+            Self::Handles(handles) => handles.map(|list| list.iter().filter_map(|h| h.path().map(Path::to_path_buf)).collect()).filter(|list: &Vec<PathBuf>| !list.is_empty()),
+        }
+    }
+
+    pub(crate) fn into_handle(self) -> Option<FileHandle> {
+        self.into_handles().and_then(|mut list| if list.is_empty() { None } else { Some(list.remove(0)) })
+    }
+
+    pub(crate) fn into_handles(self) -> Option<Vec<FileHandle>> {
+        match self {
+            Self::Single(path) => path.map(|p| vec![FileHandle::from_path(p)]),
+            Self::Many(paths) => paths.map(|list| list.into_iter().map(FileHandle::from_path).collect()),
+            Self::Handles(handles) => handles,
         }
     }
 
@@ -260,9 +278,18 @@ impl DialogAnswer {
         match self {
             Self::Single(path) => path.is_some(),
             Self::Many(paths) => paths.is_some(),
+            Self::Handles(handles) => handles.is_some(),
         }
     }
 }
+
+/// What a [`Tx::pick_file`] or [`Tx::pick_save_file`] callback gets: the chosen file, `Ok(None)`
+/// when the user cancels, or why no dialog could show.
+pub type FileHandleResult = Result<Option<FileHandle>, FileDialogError>;
+
+/// What a [`Tx::pick_files`] callback gets: the chosen files, `Ok(None)` when the user cancels,
+/// or why no dialog could show.
+pub type FileHandlesResult = Result<Option<Vec<FileHandle>>, FileDialogError>;
 
 pub(crate) type DialogOutcome = Result<DialogAnswer, FileDialogError>;
 
@@ -271,6 +298,8 @@ pub(crate) type AnswerFn = Box<dyn FnOnce(crate::states::States<'_>, DialogOutco
 pub(crate) struct Request {
     pub kind: FileDialogKind,
     pub multiple: bool,
+    /// The caller takes [`FileHandle`]s: a host may answer with documents that have no path.
+    pub handles: bool,
     pub options: FileDialogOptions,
     pub on_answer: AnswerFn,
 }
@@ -295,6 +324,7 @@ pub(crate) struct Pending {
     pub id: u64,
     pub kind: FileDialogKind,
     pub multiple: bool,
+    pub handles: bool,
     pub options: FileDialogOptions,
 }
 
@@ -367,7 +397,7 @@ impl Tx {
     /// chooser on Linux.
     ///
     /// ```
-    /// # use std::path::PathBuf;
+    /// # use std::path::{Path, PathBuf};
     /// # use rune::{FileDialogOptions, Tx, el};
     /// # struct App { error: Option<String> }
     /// # impl App { fn import(&mut self, _: PathBuf) {} }
@@ -393,7 +423,7 @@ impl Tx {
     /// it with `{"type": "file-dialog", "paths": [...]}` or `{"type": "file-dialog-cancel"}`.
     ///
     /// ```
-    /// # use std::path::PathBuf;
+    /// # use std::path::{Path, PathBuf};
     /// # use rune::{FileDialogOptions, Tx, el};
     /// # struct App { error: Option<String> }
     /// # impl App { fn import_all(&mut self, _: Vec<PathBuf>) {} }
@@ -416,6 +446,7 @@ impl Tx {
         self.file_dialogs.push(Call(Rc::new(RefCell::new(Some(Request {
             kind: FileDialogKind::Open,
             multiple: true,
+            handles: false,
             options,
             on_answer,
         })))));
@@ -433,6 +464,7 @@ impl Tx {
         self.file_dialogs.push(Call(Rc::new(RefCell::new(Some(Request {
             kind: FileDialogKind::Save,
             multiple: false,
+            handles: false,
             options,
             on_answer,
         })))));
@@ -445,6 +477,50 @@ impl Tx {
         self.file_dialog(FileDialogKind::Folder, options, on_answer);
     }
 
+    /// [`Tx::open_file`] answered with a [`FileHandle`] where it answers with a path: for every
+    /// platform, those whose picker gives documents with no path included (Android). Read the
+    /// file with [`FileHandle::reader`], off the UI thread.
+    ///
+    /// ```
+    /// # use rune::{FileDialogOptions, FileHandle, Tx, el};
+    /// # struct App { attached: Vec<FileHandle>, error: Option<String> }
+    /// # let _ = el()
+    /// .on_press_tx(|_: &mut App, tx: &mut Tx| {
+    ///     tx.pick_file(FileDialogOptions::default(), |s: &mut App, result, _| match result {
+    ///         Ok(Some(file)) => s.attached.push(file),
+    ///         Ok(None) => {}
+    ///         Err(e) => s.error = Some(e.to_string()),
+    ///     });
+    /// })
+    /// # ;
+    /// ```
+    pub fn pick_file<S: 'static>(&mut self, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileHandleResult, &mut Tx) + 'static) {
+        self.pick(FileDialogKind::Open, options, on_answer);
+    }
+
+    /// [`Tx::pick_file`] with several files picked at once.
+    pub fn pick_files<S: 'static>(&mut self, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileHandlesResult, &mut Tx) + 'static) {
+        let on_answer: AnswerFn = Box::new(move |s, result, tx| {
+            // None once the playground has dropped the stage that asked.
+            if let Some(s) = s.cast::<S>() { on_answer(s, result.map(DialogAnswer::into_handles), tx); }
+        });
+        self.file_dialogs.push(Call(Rc::new(RefCell::new(Some(Request { kind: FileDialogKind::Open, multiple: true, handles: true, options, on_answer })))));
+    }
+
+    /// [`Tx::pick_file`] for a Save dialog: the file to write with [`FileHandle::writer`], which
+    /// may not exist yet.
+    pub fn pick_save_file<S: 'static>(&mut self, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileHandleResult, &mut Tx) + 'static) {
+        self.pick(FileDialogKind::Save, options, on_answer);
+    }
+
+    fn pick<S: 'static>(&mut self, kind: FileDialogKind, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileHandleResult, &mut Tx) + 'static) {
+        let on_answer: AnswerFn = Box::new(move |s, result, tx| {
+            // None once the playground has dropped the stage that asked.
+            if let Some(s) = s.cast::<S>() { on_answer(s, result.map(DialogAnswer::into_handle), tx); }
+        });
+        self.file_dialogs.push(Call(Rc::new(RefCell::new(Some(Request { kind, multiple: false, handles: true, options, on_answer })))));
+    }
+
     fn file_dialog<S: 'static>(&mut self, kind: FileDialogKind, options: FileDialogOptions, on_answer: impl FnOnce(&mut S, FileDialogResult, &mut Tx) + 'static) {
         let on_answer: AnswerFn = Box::new(move |s, result, tx| {
             // None once the playground has dropped the stage that asked.
@@ -453,6 +529,7 @@ impl Tx {
         self.file_dialogs.push(Call(Rc::new(RefCell::new(Some(Request {
             kind,
             multiple: false,
+            handles: false,
             options,
             on_answer,
         })))));
