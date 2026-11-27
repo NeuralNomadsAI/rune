@@ -765,8 +765,8 @@ top-left, which is what popups and context menus anchor to.
 | --- | --- | --- |
 | `on_drag` | `Drag::x`, `y`; `start_x`, `start_y`, `w`, `h` captured at press | local |
 | `on_drag` | `Drag::dx`, `dy` (travel since the press) | window |
-| `on_wheel` | `WheelEvent::x`, `y` (`dx`, `dy` are the scroll in points) | local |
-| `on_magnify`, `on_rotate` | `MagnifyEvent::x`, `y`, `RotateEvent::x`, `y` | local |
+| `on_wheel`, `on_wheel_any` | `WheelEvent::x`, `y` (`dx`, `dy` are the scroll in points) | local |
+| `on_magnify`, `on_magnify_any`, `on_rotate` | `MagnifyEvent::x`, `y`, `RotateEvent::x`, `y` | local |
 | `on_smart_magnify` | `x`, `y` | local |
 | `on_pointer_move_local`, `on_secondary_press_local`, `on_any_press` | `PointerEvent::x`, `y` | local |
 | | `PointerEvent::window_x`, `window_y`, `window()` | window |
@@ -782,7 +782,7 @@ top-left, which is what popups and context menus anchor to.
 | `on_link_hover` | `Option<[left, top, width, height]>` of the hovered link's hit line box on enter/switch, `None` on leave | window |
 | `context_menu`, `PopupAnchor::from(PointerPress)` | the anchor they take | window |
 
-`on_press_tx`, `on_background_press_tx`, `on_double_press_tx`, and `on_middle_press` expose
+`on_press_tx`, `on_press_tx_any`, `on_background_press_tx`, `on_double_press_tx`, and `on_middle_press` expose
 the pointer activation position through `tx.press_point() -> Option<PointerEvent>` (element-local
 `x`/`y` and window `window_x`/`window_y` on mouse or touch activation, `None` on keyboard or
 assistive-technology activation and outside press handlers). Inside `El::on_link` (and
@@ -806,9 +806,10 @@ remounting fires it again; call `Tx::live_only` to skip the follow-up commit whe
 `on_drawn_layout_tx` also re-fire once when the display scale changes (even when the logical
 point rect is unchanged), and `Tx::scale()` reports the current display scale (device pixels per
 view point, including `Cx::zoom`) in any handler or `poll`. State-independent `_any` builders
-(`on_drag_any`, `on_pointer_move_any`, `on_hover_change_any`, `on_focus_change_any`,
-`on_focus_within_change_any`, `on_layout_any`, `on_visible_any`, and `on_key_any`) omit the
-app state type parameter so reusable components can mount under any host state.
+(`on_press_tx_any`, `on_drag_any`, `on_pointer_move_any`, `on_hover_change_any`,
+`on_focus_change_any`, `on_focus_within_change_any`, `on_layout_any`, `on_visible_any`,
+`on_key_any`, `on_wheel_any`, and `on_magnify_any`) omit the app state type parameter so reusable
+components can mount under any host state.
 
 ### App lifetime (`app.rs`, for apps that outlive their window)
 
@@ -872,9 +873,10 @@ app.run();
 - Closing hides the window on macOS, Windows and X11, and destroys it on Wayland (no hidden
   toplevel exists there); `open` recreates it with the same app id (`set_app_id`).
 - Activation: the first window takes the launcher's `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID`
-  and clears them from the environment. A new window gets a forwarded token through winit's
-  `with_activation_token`. An open Wayland window is activated with `xdg_activation_v1` bound on
-  winit's own display (`platform/activation.rs`), since winit 0.30 can't. Without a token Wayland can only
+  and clears them from the environment. A new window gets a forwarded token (via
+  `AppHandle::activate` or `WindowHandle::activate`) through winit's `with_activation_token`. An
+  open Wayland window is activated with `xdg_activation_v1` bound on winit's own display
+  (`platform/activation.rs`), since winit 0.30 can't. Without a token Wayland can only
   request attention (most compositors mark it urgent); X11, macOS and Windows use `focus_window`.
 - Headless tooling runs ignore window requests and apply updates before each frame.
 - `AppHandle::is_visible()` reports whether the window is on screen; `AppHandle::window_error()`
@@ -1670,7 +1672,11 @@ rune::App::new(spec).fit_content_height().run();
   as shorthand for `ContentSizing::FitHeight` — for an overlay whose size follows its content
   (a candidate list, a horizontal IME bar, a HUD). Fitted axes are measured before each show
   and prewarm (at the target monitor's scale and active `RendererKind`, clamped to `min_size`,
-  `max_size`, and the display's work area, with text wrapping at `max_size.0`), so its first
+  `max_size`, and the display's sizing bounds — on Windows, `Display::work_area()` for edge
+  placements and full display bounds for `OverlayPlacement::Rect`, matching placement
+  coordinates; full display bounds elsewhere; pass `max_size` from `Display::work_area()` if
+  a content-sized `Rect` overlay should stay within the work area — with text wrapping at
+  `max_size.0`), so its first
   frame draws at the exact content size with no flash. While shown, a content size change
   resizes and re-places the overlay before painting in the same frame (no spring; on Wayland
   layer-shell, holds the previous frame until the compositor confirms the new size).
@@ -3435,9 +3441,11 @@ is one more host on the event loop
   unless interactive. Clicks still reach Rune through winit's view (`platform/macos.rs`).
 - Windows: a topmost tool window with `WS_EX_NOACTIVATE` (plus `WS_EX_TRANSPARENT|WS_EX_LAYERED`
   unless interactive), shown with `SW_SHOWNOACTIVATE`; edge-placed overlays (both `OverlaySpec`
-  defaults and `OverlayPlacement::Edge`) anchor inside all four sides of `Display::work_area()`
-  (`GetMonitorInfoW`'s `rcWork` in `platform/win32.rs`), while `OverlayPlacement::Rect` and
-  `OverlayPlacement::FullScreen` stay in full display coordinates.
+  defaults and `OverlayPlacement::Edge`) anchor and clamp `ContentSizing` inside all four sides
+  of `Display::work_area()` (`GetMonitorInfoW`'s `rcWork` in `platform/win32.rs`), while
+  `OverlayPlacement::Rect` and `OverlayPlacement::FullScreen` stay in full display coordinates
+  for both placement and `ContentSizing` (pass `max_size` from `Display::work_area()` if a
+  content-sized `Rect` overlay should stay within the work area).
 - Opt-in CPU rendering on Windows (`ConfiguredOverlay::renderer(RendererKind::Cpu)`, default
   `RendererKind::Gpu`): keeps a transparent Windows overlay on `CpuPainter` for its whole
   lifetime and presents premultiplied BGRA frames (`clear = [0.0; 4]`, `lcd = false`) through
@@ -3776,9 +3784,12 @@ On Windows 11 Build 22000+, an off-by-default `windows-system-material` Cargo fe
 documented `DWMWA_USE_HOSTBACKDROPBRUSH` and a Windows 11 Acrylic Luminosity + Color
 `CompositionEffectBrush` (built with `IGraphicsEffect` / `IGraphicsEffectD2D1Interop` over
 `Compositor::CreateHostBackdropBrush`, zero Win2D) clipped per frame under Rune's swap-chain
-visual. Each `(SystemMaterial, dark)` pair caches a single brush (`Popover` = Default Acrylic,
-`Sidebar` = Base Acrylic, `Glass` = clearer chromatic Acrylic; at most 6 cached brushes per
-window) and degrades gracefully to a WCAG >=4.5:1 flat tint if effect compilation fails.
+visual. Each resolved Acrylic recipe is cached per target (`Popover` = Default Acrylic,
+`Sidebar` = Base Acrylic, `Glass` = clearer chromatic Acrylic; plain `El::system_material` caches
+at most 6 brushes per window, and `El::system_material_with(material, MaterialParams)` overrides
+optional tint RGB, tint opacity, luminosity opacity, and `0.0..=4.0` backdrop saturation via
+`CLSID_D2D1ColorMatrix` in a bounded LRU cache) and degrades gracefully to a WCAG >=4.5:1 flat
+tint if effect compilation fails.
 Light-theme Acrylic uses Microsoft's WinUI 3 light recipes (`#FCFCFC` / `#F3F3F3`), which are
 designed for dark text chosen from the active theme (`cx.system_dark()`). Windows
 follows the same fill rules as Wayland: opaque fills (`alpha >= 1.0`, such as `rune-kit::Toolbar`)
@@ -4048,7 +4059,10 @@ accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "<re
 Patch both `winit` and `sctk-adwaita`, and from the same revision: Rune's winit calls
 `AdwaitaFrame::content_corner_radius`, which only the vendored frame has, so a workspace that
 patches winit without sctk-adwaita doesn't compile. With both, a decorated Wayland window's
-buttons, titlebar and rounded bottom corners are drawn by the vendored frame.
+buttons, titlebar, window title (enabled by the default `wayland-csd-title` feature; disable with
+`default-features = false` for custom-titlebar or minimal Linux builds to omit `ab_glyph` and its
+fallback font while keeping CSD frames and buttons) and rounded bottom corners are drawn by the
+vendored frame.
 
 When you update Rune, check its [root `Cargo.toml`](../../Cargo.toml) at the new revision and
 use that same `rev` for Rune and every patch.
@@ -4591,6 +4605,8 @@ grouped list, and a knobs column) maps onto `App::playground` like this:
 | counts beside the headers, motion marks    | built in                                                               |
 
 ## Live Rust editing (desktop development)
+
+For a cross-platform CLI without Bash or Python (`rune new`, `rune dev`, `rune check`, `rune doctor`), see [`crates/rune-cli`](../rune-cli/README.md). `scripts/rune-dev` below remains available for the maintainers' remote build-worker and desk-Mac relay workflow.
 
 ```sh
 scripts/rune-dev settings -- --snap-on-patch perf/live-edit/settings.png --hot-control perf/live-edit/control.json

@@ -4,7 +4,9 @@
 #[cfg(any(target_os = "macos", feature = "frame-profile"))]
 use super::stepping::FrameMove;
 use super::{CompositorFrame, Host};
-use crate::frame::host_step::{RenderPrep, StepInfo, draw_ui, prepare_gpu_resources_with};
+use crate::frame::host_step::{
+    RenderPrep, StepInfo, create_frame_encoder, draw_ui, prepare_gpu_resources_with,
+};
 use crate::time::Instant;
 #[cfg(target_os = "windows")]
 use crate::window::win32::{damage, handover};
@@ -281,7 +283,7 @@ pub(super) fn prepare_window_render(
         renderer.next_instances(rt.paint_count(), looped.cloned());
     }
     profile.mark_uploaded();
-    let encoder = gpu.device.create_command_encoder(&Default::default());
+    let encoder = create_frame_encoder(gpu);
     // Only what changed is redrawn and presented (`damage`): the renderer's `draw` takes the
     // armed rectangles when nothing but the instances draws there, a compositor's
     // `Frame::draw_ui` included. A loop-only frame knows what changed.
@@ -360,9 +362,15 @@ pub(super) fn render_window_frame(
         false
     };
     // Every frame, so a frame drawn whole leaves the renderer's kept frame behind.
+    // A catch-up frame (`KeptDraw::Whole`) drew whole to bring the kept frame current after a
+    // frame that bypassed it (e.g. a native surface whose pixels `Damage::plan` does not track),
+    // so it must present the whole window instead of stamping partial dirty rects over the old
+    // front buffer.
     #[cfg(target_os = "windows")]
     match (renderer.damage_drawn(), prepared.part.take()) {
-        (Ok(()), part) => prepared.present_rect = part,
+        (Ok(crate::render::KeptDraw::Partial), part) => prepared.present_rect = part,
+        (Ok(crate::render::KeptDraw::Whole), Some(_)) => profile.set_whole_why("kept behind"),
+        (Ok(crate::render::KeptDraw::Whole), None) => {}
         (Err(why), Some(_)) => profile.set_whole_why(why),
         (Err(_), None) => {}
     }
