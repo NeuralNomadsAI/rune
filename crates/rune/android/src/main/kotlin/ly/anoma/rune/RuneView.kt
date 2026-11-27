@@ -150,9 +150,10 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
             EDITOR_EMAIL -> InputType.TYPE_CLASS_TEXT or (if (secure) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
             EDITOR_URL -> InputType.TYPE_CLASS_TEXT or (if (secure) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_VARIATION_URI)
             // A secret number is a PIN.
-            EDITOR_NUMBER -> InputType.TYPE_CLASS_NUMBER or (if (secure) InputType.TYPE_NUMBER_VARIATION_PASSWORD else 0)
+            EDITOR_NUMERIC -> InputType.TYPE_CLASS_NUMBER or (if (secure) InputType.TYPE_NUMBER_VARIATION_PASSWORD else 0)
             EDITOR_DECIMAL -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or (if (secure) InputType.TYPE_NUMBER_VARIATION_PASSWORD else 0)
-            EDITOR_PHONE -> InputType.TYPE_CLASS_PHONE
+            EDITOR_TEL -> InputType.TYPE_CLASS_PHONE
+            EDITOR_SEARCH -> InputType.TYPE_CLASS_TEXT or (if (secure) InputType.TYPE_TEXT_VARIATION_PASSWORD else 0)
             else -> InputType.TYPE_CLASS_TEXT or when {
                 secure -> InputType.TYPE_TEXT_VARIATION_PASSWORD
                 oneLine -> prose
@@ -161,7 +162,11 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         }
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             (if (secure) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0) or
-            (if (oneLine) EditorInfo.IME_ACTION_DONE else EditorInfo.IME_ACTION_NONE)
+            when {
+                editor shr 8 == EDITOR_SEARCH -> EditorInfo.IME_ACTION_SEARCH
+                oneLine -> EditorInfo.IME_ACTION_DONE
+                else -> EditorInfo.IME_ACTION_NONE
+            }
         val selection = nativeImeSelection(handle)
         if (selection >= 0) {
             outAttrs.initialSelStart = (selection ushr 32).toInt()
@@ -447,9 +452,10 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val EDITOR_ONE_LINE = 2
         const val EDITOR_EMAIL = 1
         const val EDITOR_URL = 2
-        const val EDITOR_NUMBER = 3
+        const val EDITOR_NUMERIC = 3
         const val EDITOR_DECIMAL = 4
-        const val EDITOR_PHONE = 5
+        const val EDITOR_TEL = 5
+        const val EDITOR_SEARCH = 6
         const val HAPTIC_SELECTION = 0
         const val HAPTIC_LIGHT = 1
         const val HAPTIC_MEDIUM = 2

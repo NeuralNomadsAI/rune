@@ -2054,11 +2054,12 @@ F6, `Tx::focus`, `TextEdit::focused`, modal focus, or assistive technology), res
 `El::scroll_margin`. Carets already inside the viewport move nothing, and wheel-scrolling away
 while the field keeps focus stays put.
 
-Call `.keyboard_type(KeyboardType::Email)` on a `text_input` (kit's
-`TextInput::keyboard_type`) to say what it holds, for a touch keyboard to lay itself out by:
-`Text` (the default), `Email`, `Url`, `Number`, `Decimal` or `Phone`. Android's keyboard shows
-the keys for it, and a `secure` number gets a PIN's; other hosts ignore it. It refuses no text,
-so validate what the field holds.
+Call `.input_mode(InputMode::Email)` on a `text_input` (kit's
+`TextInput::input_mode`) to say what it holds, for a touch keyboard to lay itself out by:
+`Text` (the default), `Email`, `Url`, `Numeric`, `Decimal`, `Tel`, `Search` or `None`, as
+HTML's `inputmode`. Android's keyboard shows the keys for it, a `secure` number gets a PIN's,
+and `None` raises no keyboard; other hosts ignore it. It refuses no text, so validate what the
+field holds.
 
 Use `TextEdit::new("").secure()` with `text_input(&edit, style).single_line()` for
 passwords, or mark the element `.single_line().secure()`; kit's `TextInput::secure()`

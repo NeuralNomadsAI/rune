@@ -100,8 +100,9 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   focus goes to another kind: a one-line field has an action key, which submits as Return does,
   where a longer one has Return; a secret field (`El::secure`) gets the keyboard as a password's,
   with no correction, suggestion or learning, and its text goes in as typed keys since it takes no
-  composition. A field that says what it holds (`El::keyboard_type`: an e-mail or web address, a
-  number, a decimal, a phone number) gets the keys for it, and a secret number a PIN's.
+  composition. A field that says what it holds (`El::input_mode`, HTML's `inputmode`: an e-mail or web address, a
+  number, a decimal, a phone number, a search) gets the keys for it, a secret number a PIN's,
+  and one with `InputMode::None` no keyboard at all.
 - **Haptics**: what handlers ask for with `Tx::haptic` is played after the frame with
   `View.performHapticFeedback` (the table in `crates/rune/src/haptics.rs`), which needs no
   permission and follows the system's touch feedback setting. The view adds what Android's own

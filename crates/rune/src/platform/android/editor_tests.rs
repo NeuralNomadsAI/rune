@@ -1,5 +1,5 @@
 use super::editor::Editor;
-use crate::{Cx, El, Env, KeyboardType, Runtime, TextEdit, TextStyle, TouchPhase, col, text, text_input};
+use crate::{Cx, El, Env, InputMode, Runtime, TextEdit, TextStyle, TouchPhase, col, text, text_input};
 
 struct S { note: TextEdit, name: TextEdit, secret: TextEdit, mail: TextEdit, pin: TextEdit }
 
@@ -9,8 +9,8 @@ fn view(s: &S, _: &mut Cx<S>) -> El {
         .child(text_input(&s.note, style).key("note").on_edit(|s: &mut S| &mut s.note).size(300.0, 60.0))
         .child(text_input(&s.name, style).single_line().key("name").on_edit(|s: &mut S| &mut s.name).size(300.0, 32.0))
         .child(text_input(&s.secret, style).single_line().secure().key("secret").on_edit(|s: &mut S| &mut s.secret).size(300.0, 32.0))
-        .child(text_input(&s.mail, style).single_line().keyboard_type(KeyboardType::Email).key("mail").on_edit(|s: &mut S| &mut s.mail).size(300.0, 32.0))
-        .child(text_input(&s.pin, style).single_line().secure().keyboard_type(KeyboardType::Number).key("pin").on_edit(|s: &mut S| &mut s.pin).size(300.0, 32.0))
+        .child(text_input(&s.mail, style).single_line().input_mode(InputMode::Email).key("mail").on_edit(|s: &mut S| &mut s.mail).size(300.0, 32.0))
+        .child(text_input(&s.pin, style).single_line().secure().input_mode(InputMode::Numeric).key("pin").on_edit(|s: &mut S| &mut s.pin).size(300.0, 32.0))
         .child(text("a label").key("label").font(style))
 }
 
@@ -32,22 +32,29 @@ fn tap(rt: &mut Runtime<S>, key: &str) -> Option<Editor> {
 fn the_keyboard_is_told_what_the_focused_field_is() {
     let mut rt = rig();
     assert_eq!(Editor::focused(rt.core_mut()), None, "no field has focus");
-    let text = KeyboardType::Text;
+    let text = InputMode::Text;
     assert_eq!(tap(&mut rt, "note"), Some(Editor { secure: false, single_line: false, keyboard: text }));
     assert_eq!(tap(&mut rt, "name"), Some(Editor { secure: false, single_line: true, keyboard: text }));
     assert_eq!(tap(&mut rt, "secret"), Some(Editor { secure: true, single_line: true, keyboard: text }));
-    assert_eq!(tap(&mut rt, "mail"), Some(Editor { secure: false, single_line: true, keyboard: KeyboardType::Email }));
-    assert_eq!(tap(&mut rt, "pin"), Some(Editor { secure: true, single_line: true, keyboard: KeyboardType::Number }));
+    assert_eq!(tap(&mut rt, "mail"), Some(Editor { secure: false, single_line: true, keyboard: InputMode::Email }));
+    assert_eq!(tap(&mut rt, "pin"), Some(Editor { secure: true, single_line: true, keyboard: InputMode::Numeric }));
 }
 
 #[test]
 fn each_kind_of_field_is_its_own_code_for_the_view() {
     let codes: Vec<i32> = [(false, false), (false, true), (true, false), (true, true)]
-        .map(|(secure, single_line)| Editor { secure, single_line, keyboard: KeyboardType::Text }.code()).to_vec();
+        .map(|(secure, single_line)| Editor { secure, single_line, keyboard: InputMode::Text }.code()).to_vec();
     assert_eq!(codes, [0, 2, 1, 3]);
-    let kinds = [KeyboardType::Text, KeyboardType::Email, KeyboardType::Url, KeyboardType::Number, KeyboardType::Decimal, KeyboardType::Phone]
+    let kinds = [InputMode::Text, InputMode::Email, InputMode::Url, InputMode::Numeric, InputMode::Decimal, InputMode::Tel, InputMode::Search, InputMode::None]
         .map(|keyboard| Editor { secure: false, single_line: true, keyboard }.code() >> 8);
-    assert_eq!(kinds, [0, 1, 2, 3, 4, 5]);
+    assert_eq!(kinds, [0, 1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn a_field_that_wants_no_keyboard_keeps_it_away() {
+    let field = |keyboard| Editor { secure: false, single_line: true, keyboard };
+    assert!(field(InputMode::Text).wants_keyboard() && field(InputMode::Search).wants_keyboard());
+    assert!(!field(InputMode::None).wants_keyboard(), "an app's own keypad types into it");
 }
 
 #[test]
