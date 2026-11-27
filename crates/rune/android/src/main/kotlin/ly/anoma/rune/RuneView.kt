@@ -1,13 +1,16 @@
 package ly.anoma.rune
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
@@ -27,6 +30,8 @@ import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.webkit.MimeTypeMap
+import java.io.File
 
 /**
  * A Rune app's view: a [SurfaceView] Rune draws into, paced by [Choreographer]. Rune keeps the
@@ -50,6 +55,10 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
 
     init {
         RuneServices.install(context)
+        if (!cleared) {
+            cleared = true
+            Thread { File(context.cacheDir, PICKED).deleteRecursively() }.start()
+        }
         handle = nativeNew(resources.displayMetrics.density, ViewConfiguration.getLongPressTimeout(), isDark(resources.configuration))
         check(handle != 0L) { "rune: the app didn't start (see logcat)" }
         holder.addCallback(this)
@@ -366,6 +375,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
             selectionUi.toolbar(it)
         }
         nativeTakeHaptics(handle)?.forEach(::haptic)
+        nativeTakeFilePick(handle)?.let(::pickFiles)
         when {
             next == 0L -> if (!frameQueued) {
                 frameQueued = true
@@ -376,6 +386,58 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
                 main.postDelayed(later, next)
             }
         }
+    }
+
+    /**
+     * Shows the system's document picker for a `Tx::open_file` or `Tx::open_files`. Set by the
+     * activity holding this view, which starts [Intent] for a result and answers with
+     * [filesPicked]; false when it could not be started.
+     */
+    var filePicker: ((id: Long, intent: Intent) -> Boolean)? = null
+
+    /** A pick the app asked for: its id, whether several documents may be picked, its extensions. */
+    private fun pickFiles(ask: String) {
+        val parts = ask.split(UNIT)
+        val id = parts.getOrNull(0)?.toLongOrNull() ?: return
+        val types = parts.getOrNull(2).orEmpty().split(',').filter { it.isNotEmpty() }
+            .map { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.lowercase()) }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, parts.getOrNull(1) == "1")
+        // An extension Android has no type for can't be asked for: every document shows then.
+        if (types.isNotEmpty() && types.none { it == null }) intent.putExtra(Intent.EXTRA_MIME_TYPES, types.distinct().toTypedArray())
+        if (filePicker?.invoke(id, intent) != true) schedule(nativeFilesPicked(handle, id, PICK_FAILED, "no activity to show the document picker"))
+    }
+
+    /**
+     * The picker for dialog [id] closed with [uris], or null when the user backed out. Each
+     * document is copied into the app's cache off the UI thread, as Rune's dialogs answer with
+     * paths; the copies last until the app's process next starts.
+     */
+    fun filesPicked(id: Long, uris: List<Uri>?) {
+        if (handle == 0L) return
+        if (uris == null) return schedule(nativeFilesPicked(handle, id, PICK_CANCELLED, null))
+        Thread {
+            val (status, text) = try {
+                PICK_DONE to uris.mapIndexed { i, uri -> copyPicked(uri, File(context.cacheDir, "$PICKED/$id-$i")) }.joinToString(RECORD.toString())
+            } catch (e: Exception) {
+                PICK_FAILED to (e.message ?: e.javaClass.simpleName)
+            }
+            post { if (handle != 0L) schedule(nativeFilesPicked(handle, id, status, text)) }
+        }.start()
+    }
+
+    /** Copies the document at [uri] into [dir] under its own name, and returns the copy's path. */
+    private fun copyPicked(uri: Uri, dir: File): String {
+        val resolver = context.contentResolver
+        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }?.replace(Regex("[/\\\\\\u0000-\\u001f]"), "_")?.takeIf { it.isNotBlank() } ?: "document"
+        dir.mkdirs()
+        val copy = File(dir, name)
+        (resolver.openInputStream(uri) ?: throw java.io.IOException("the document could not be opened")).use { input ->
+            copy.outputStream().use { input.copyTo(it) }
+        }
+        return copy.path
     }
 
     /** Plays one of Rune's haptics (`Tx::haptic`) with what this API level has for it. */
@@ -435,6 +497,8 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     private external fun nativeTakeHandles(handle: Long): FloatArray?
     private external fun nativeTakeToolbar(handle: Long): String?
     private external fun nativeTakeHaptics(handle: Long): IntArray?
+    private external fun nativeTakeFilePick(handle: Long): String?
+    private external fun nativeFilesPicked(handle: Long, id: Long, status: Int, text: String?): Long
     private external fun nativeHandle(handle: Long, which: Int, phase: Int, x: Float, y: Float, fingerY: Float): Long
     private external fun nativeToolbarPicked(handle: Long, index: Int): Long
     private external fun nativeDark(handle: Long, dark: Boolean): Long
@@ -448,6 +512,15 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
         const val KEYBOARD_RESTART = 3
         const val KEYBOARD_SELECT = 4
         const val KEYBOARD_REVEAL = 8
+        const val PICK_DONE = 0
+        const val PICK_CANCELLED = 1
+        const val PICK_FAILED = 2
+        /** Under the cache directory: the copies of picked documents. */
+        const val PICKED = "rune-picked"
+        const val UNIT = '\u001f'
+        const val RECORD = '\u001e'
+        /** The last process's copies go when a view is first made in this one. */
+        private var cleared = false
         const val EDITOR_SECURE = 1
         const val EDITOR_ONE_LINE = 2
         const val EDITOR_EMAIL = 1

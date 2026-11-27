@@ -1,11 +1,11 @@
 //! A field of each kind, to check on a device which keyboard each one raises: several lines,
 //! one line (its action key submits, with a haptic), a secret, and one for each
-//! `InputMode`.
+//! `InputMode`; and a button that picks documents (`Tx::open_files`).
 //! `scripts/android-run.sh --app fields`.
 
 
 use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, Haptic, HapticOutcome, InputMode, ScrollSpec, TextEdit, col, edit_access, text, text_input};
+use rune::{AppSpec, Cx, El, FileDialogOptions, Haptic, HapticOutcome, InputMode, ScrollSpec, TextEdit, Tx, col, edit_access, text, text_input};
 
 /// One-line fields that say what they hold.
 const KINDS: [(&str, InputMode); 7] = [
@@ -25,6 +25,8 @@ struct State {
     pin: TextEdit,
     kinds: [TextEdit; KINDS.len()],
     submitted: String,
+    /// What the document picker last answered: each copy's path, or why there is none.
+    picked: Vec<String>,
 }
 
 impl Default for State {
@@ -36,6 +38,7 @@ impl Default for State {
             pin: TextEdit::default().secure(),
             kinds: Default::default(),
             submitted: String::new(),
+            picked: Vec::new(),
         }
     }
 }
@@ -64,7 +67,21 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         let input = text_input(&s.kinds[i], type_::BODY).single_line().input_mode(keyboard).key(label).on_edit(edit_access(move |s: &mut State| &mut s.kinds[i]));
         page = page.child(field(label, input, &t));
     }
-    let page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary));
+    let attach = text("Attach files").key("attach").role("button").focusable(true).font(type_::TITLE).color(t.text)
+        .padding(10.0).radius(8.0).fill(t.control_off)
+        .on_press_tx(|_: &mut State, tx: &mut Tx| {
+            tx.open_files(FileDialogOptions::default(), |s: &mut State, result, _| {
+                s.picked = match result {
+                    Ok(Some(paths)) => paths.iter().map(|p| p.display().to_string()).collect(),
+                    Ok(None) => vec!["Nothing picked".to_owned()],
+                    Err(why) => vec![why.to_string()],
+                };
+            });
+        });
+    let mut page = page.child(text(submitted).key("submitted").font(type_::BODY).color(t.text_secondary)).child(attach);
+    for (i, line) in s.picked.iter().enumerate() {
+        page = page.child(text(line.clone()).key(format!("picked-{i}")).font(type_::BODY).color(t.text_secondary));
+    }
     col().w_full().h_full().pt(top).pr(right).pb(bottom).pl(left).fill(t.bg).child(page)
 }
 

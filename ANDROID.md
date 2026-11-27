@@ -117,6 +117,13 @@ complete project. The `ly.anoma.rune.lib_name` meta-data names another library.
   the system's clipboard changes.
 - **Links**: `Tx::open_url` starts `Intent.ACTION_VIEW`; `Tx::open_url_then` reports a failure when no
   app takes the link.
+- **Files**: `Tx::open_file` and `Tx::open_files` show the system's document picker
+  (`Intent.ACTION_OPEN_DOCUMENT`, the filters' extensions as MIME types). It answers with
+  `content://` URIs where Rune's dialogs answer with paths, so `RuneView` copies each picked
+  document into the app's cache (`rune-picked/`), off the UI thread, and the copies' paths answer
+  the dialog; they last until the app's process next starts. `RuneActivity` starts the picker; a
+  host with its own activity sets `RuneView.filePicker` and calls `filesPicked`. `Tx::save_file`
+  and `Tx::open_folder` are refused with an error: there is no path to give for them.
 - **Accessibility**: TalkBack reads Rune's AccessKit tree through an `AccessibilityNodeProvider` on
   `RuneView` (`accesskit_android`, with the `accessibility` feature): roles, names, states, focus,
   explore by touch and actions. The view is a passive root and each text a stop of its own
