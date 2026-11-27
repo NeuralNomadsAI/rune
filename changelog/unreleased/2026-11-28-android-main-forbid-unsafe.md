@@ -1,0 +1,1 @@
+- Android: `rune::android_main!` works in a crate that has `#![forbid(unsafe_code)]`: the macro no longer carries an `allow` that such a crate rejects.

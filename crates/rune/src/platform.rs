@@ -58,7 +58,8 @@ pub(crate) mod x11;
 
 /// Exports `f` (a `fn()` that calls [`run`](crate::run)) as the entry point Android's
 /// `RuneView` calls (`ANDROID.md`). Expands to nothing on other targets, so a crate that builds
-/// both a binary and an Android `cdylib` can share its `main`.
+/// both a binary and an Android `cdylib` can share its `main`. A crate that forbids unsafe code
+/// can use it: the exported symbol is this macro's, not the crate's.
 ///
 /// ```ignore
 /// rune::android_main!(main);
@@ -68,7 +69,6 @@ pub(crate) mod x11;
 macro_rules! android_main {
     ($f:path) => {
         #[cfg(target_os = "android")]
-        #[allow(unsafe_code)]
         #[unsafe(no_mangle)]
         extern "C" fn rune_android_main() {
             $f()
