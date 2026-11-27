@@ -1,5 +1,5 @@
 //! JNI entry points for what `RuneView` takes after a frame beside the keyboard: its selection
-//! handles and toolbar, the haptics to play and a document pick with its answer; on the UI thread.
+//! handles and toolbar, and the haptics to play; on the UI thread.
 
 #![allow(unsafe_code)]
 
@@ -87,30 +87,4 @@ extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeHaptics(env: *mut JNIEn
         if !array.is_null() { call!(env, SetIntArrayRegion(array, 0, codes.len() as i32, codes.as_ptr())) }
         array
     }
-}
-
-/// The document pick the app asked for (`picker::Pick::Show`), once, else null.
-#[unsafe(no_mangle)]
-extern "system" fn Java_ly_anoma_rune_RuneView_nativeTakeFilePick(env: *mut JNIEnv, _: jobject, h: jlong) -> jstring {
-    // SAFETY: `h` comes from `nativeNew`.
-    let Some(ask) = (unsafe { handle(h) }).and_then(|h| h.view.take_file_pick()) else { return null_mut() };
-    let units: Vec<u16> = ask.encode_utf16().collect();
-    // SAFETY: `units` is a live UTF-16 buffer of the given length.
-    unsafe { call!(env, NewString(units.as_ptr(), units.len() as i32)) }
-}
-
-/// The picker for dialog `id` closed: `status` 0 with the copies' paths joined by `RECORD`,
-/// 1 when the user backed out, 2 with why a document could not be copied.
-#[unsafe(no_mangle)]
-extern "system" fn Java_ly_anoma_rune_RuneView_nativeFilesPicked(env: *mut JNIEnv, _: jobject, h: jlong, id: jlong, status: jint, text: jstring) -> jlong {
-    // SAFETY: `h` comes from `nativeNew`.
-    let Some(h) = (unsafe { handle(h) }) else { return -1 };
-    // SAFETY: `text` is the view's live string, or null.
-    let text = if text.is_null() { String::new() } else { unsafe { super::jni::java_string(env, text) } };
-    let picked = match status {
-        0 => Ok(Some(text.split(RECORD).filter(|p| !p.is_empty()).map(Into::into).collect())),
-        1 => Ok(None),
-        _ => Err(text),
-    };
-    next(h.view.files_picked(id.max(0) as u64, picked))
 }

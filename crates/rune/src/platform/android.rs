@@ -38,9 +38,6 @@ pub(crate) mod lifecycle;
 mod lifecycle_tests;
 #[cfg(target_os = "android")]
 mod logcat;
-pub(crate) mod picker;
-#[cfg(test)]
-mod picker_tests;
 pub(crate) mod selection;
 #[cfg(test)]
 mod selection_tests;
