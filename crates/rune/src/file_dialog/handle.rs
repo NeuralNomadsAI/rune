@@ -9,8 +9,11 @@ use std::path::{Path, PathBuf};
 /// A file the user picked with [`Tx::pick_file`](crate::Tx::pick_file),
 /// [`Tx::pick_files`](crate::Tx::pick_files) or [`Tx::pick_save_file`](crate::Tx::pick_save_file).
 ///
-/// [`Self::reader`] and [`Self::writer`] block: call them off the UI thread, as from
-/// `rune::task::spawn`. The handle is `Send` and cheap to clone.
+/// [`Self::read`] and [`Self::write`] take or give the whole file as futures, the shape every
+/// platform can answer. [`Self::reader`] and [`Self::writer`] stream it where the platform has
+/// files to open (not in a browser). All of them do their work where they are called or
+/// awaited: off the UI thread, as from `rune::task::spawn`. The handle is `Send` and cheap to
+/// clone.
 ///
 /// ```no_run
 /// # use std::io::Read;
@@ -68,6 +71,21 @@ impl FileHandle {
             Source::Path(path) => Some(path),
             Source::Document(_) => None,
         }
+    }
+
+    /// Reads the whole file. The shape every platform can answer, a browser's file included;
+    /// on a desktop and on Android the read happens inside the future, as
+    /// `rfd::FileHandle::read`'s does, so await it off the UI thread.
+    pub async fn read(&self) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.reader()?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Writes the file anew with `bytes`, replacing what it held. As [`Self::read`], for
+    /// every platform.
+    pub async fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        self.writer()?.write_all(bytes)
     }
 
     /// Opens the file to read from its start. Blocks.

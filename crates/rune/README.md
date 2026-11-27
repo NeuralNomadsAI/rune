@@ -2604,8 +2604,9 @@ Or ask from a handler, with no executor or waker to wire up:
 - `tx.pick_file`, `tx.pick_files` and `tx.pick_save_file` are the same dialogs answered with a
   `FileHandle` (`FileHandleResult`, `FileHandlesResult`) where the others answer with a path:
   its `name()`, its `path()` where the platform has one (a desktop does; Android's document
-  picker gives `content://` documents, with `None`), and `reader()` and `writer()` to read it or
-  write it anew. Both block: call them off the UI thread, as from a `Latest` request. Use these
+  picker gives `content://` documents, with `None`), `read().await` and `write(bytes).await` for
+  the whole file, and `reader()` and `writer()` to stream it. All of them work where they are
+  called or awaited: off the UI thread, as from a `Latest` request. Use these
   for a file an app reads or writes itself, on every platform; Android refuses the path dialogs.
 - One dialog at a time: asked for while one is open, the callback gets an error at once and
   the open dialog stays. Asked for in the same turn that shows a hidden window, it shows with

@@ -70,6 +70,16 @@ fn a_handle_writes_and_reads_its_file() {
 }
 
 #[test]
+fn a_handle_writes_and_reads_whole_as_futures() {
+    let path = std::env::temp_dir().join(format!("rune-file-handle-async-{}.txt", std::process::id()));
+    let handle = FileHandle::from_path(&path);
+    pollster::block_on(handle.write(b"all at once")).unwrap();
+    let bytes = pollster::block_on(handle.read());
+    std::fs::remove_file(&path).ok();
+    assert_eq!(bytes.unwrap(), b"all at once");
+}
+
+#[test]
 fn a_document_has_a_name_and_no_path() {
     let document = FileHandle::document("report.pdf", "content://docs/document/42");
     assert_eq!((document.name(), document.path()), ("report.pdf", None));
