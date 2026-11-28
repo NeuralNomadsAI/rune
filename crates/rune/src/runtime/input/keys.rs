@@ -657,6 +657,14 @@ impl RuntimeCore {
     pub fn has_focus(&self) -> bool {
         self.kbd.has_focus()
     }
+
+    /// Returns and clears whether the most recently dispatched key press was consumed by Rune,
+    /// for a host that leaves the key to its platform otherwise (a browser's shortcut,
+    /// Android's back).
+    #[cfg_attr(not(any(target_arch = "wasm32", target_os = "android", test)), allow(dead_code))]
+    pub(crate) fn take_key_consumed(&mut self) -> bool {
+        self.kbd.take_key_consumed()
+    }
 }
 
 #[cfg(test)]

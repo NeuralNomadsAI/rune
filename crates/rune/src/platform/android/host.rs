@@ -18,7 +18,7 @@ use selection::{SelectionBridge, Toolbar};
 use crate::popup_menu::Show;
 use crate::runtime::touch_ui::{Ends, Handle};
 use crate::runtime::{RuntimeCore, Waker};
-use crate::{Ime, Key, KeyEvent, TouchPhase};
+use crate::{Ime, KeyEvent, TouchPhase};
 
 /// What `RuneView` needs from a running app, with its state type erased.
 pub(super) trait Host {
@@ -33,9 +33,6 @@ pub(super) trait Host {
     fn set_long_press(&mut self, secs: f64);
     /// One finger at (x, y) in points, `time` in seconds.
     fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64);
-    /// The system back gesture: Escape when something has focus (closing what's open, or
-    /// leaving a field), false to let the activity go back.
-    fn back(&mut self) -> bool;
     fn core(&mut self) -> &mut RuntimeCore;
     /// The selection's handles and toolbar (`runtime/selection/touch_ui.rs`).
     fn selection_ends(&self) -> Option<Ends>;
@@ -59,12 +56,6 @@ impl<S: 'static> Host for LayerHost<S> {
     fn set_dark(&mut self, dark: bool) { self.runtime_mut().set_system_dark(dark); }
     fn set_long_press(&mut self, secs: f64) { self.runtime_mut().set_touch_long_press(secs); }
     fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, time: f64) { self.runtime_mut().touch(id, phase, x, y, time); }
-    fn back(&mut self) -> bool {
-        let rt = self.runtime_mut();
-        if !rt.has_focus() { return false }
-        rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
-        true
-    }
     fn core(&mut self) -> &mut RuntimeCore { self.runtime_mut().core_mut() }
     fn selection_ends(&self) -> Option<Ends> { self.runtime().selection_ends() }
     fn take_text_menu(&mut self) -> Option<Show> { self.runtime_mut().take_text_menu() }
@@ -357,7 +348,12 @@ impl View {
         self.a11y.as_mut()
     }
 
+    /// The system back gesture (`back.rs`): false to let the activity go back.
     pub(super) fn back(&mut self) -> bool {
-        self.host.as_mut().is_some_and(|host| host.back())
+        let Some(host) = &mut self.host else { return false };
+        super::back::press(host.core());
+        // What takes the Escape is known once a frame has routed it. `RuneView` asks for the next.
+        self.step(Event::Frame, None);
+        self.host.as_mut().is_some_and(|host| super::back::taken(host.core()))
     }
 }

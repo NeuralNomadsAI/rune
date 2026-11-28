@@ -134,7 +134,8 @@ The macro works in a crate that has `#![forbid(unsafe_code)]`.
   explore by touch and actions. The view is a passive root and each text a stop of its own
   (Android 9+). Nothing is built until a service asks, and while a viewport scrolls the tree's
   changes go at most every 100 ms.
-- **Back**: when something has focus, back sends Escape (closing what's open or leaving a
-  field); otherwise the activity goes back.
+- **Back**: back sends Escape, which closes what's open or leaves a field. When nothing takes
+  the key, the activity goes back: an app's `on_key` returns false for an Escape it has no use
+  for, as it does for a browser's shortcuts on the web.
 
 Not yet: file pickers.

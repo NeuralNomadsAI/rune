@@ -326,7 +326,7 @@ class RuneView(context: Context) : SurfaceView(context), SurfaceHolder.Callback,
     }
 
     /** The system back gesture; false when Rune had nothing to close or leave. */
-    fun back(): Boolean = nativeBack(handle).also { if (it) schedule(0) }
+    fun back(): Boolean = nativeBack(handle).also { schedule(0) }
 
     fun configurationChanged(config: Configuration) = schedule(nativeDark(handle, isDark(config)))
 

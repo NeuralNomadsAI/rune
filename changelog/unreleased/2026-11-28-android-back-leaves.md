@@ -1,0 +1,1 @@
+- Android: back leaves the app when nothing takes its Escape. It used to send Escape whenever something had focus and stop there, so a button that kept focus after a tap held the user in the app. An app's `on_key` returns false for an Escape it has no use for.
